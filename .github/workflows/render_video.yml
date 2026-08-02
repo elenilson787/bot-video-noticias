@@ -21,7 +21,7 @@ jobs:
 
       - name: Instalar Dependencias
         run: |
-          pip install openai python-telegram-bot trafilatura edge-tts requests pyrogram tgcrypto duckduckgo_search beautifulsoup4
+          pip install openai python-telegram-bot trafilatura edge-tts requests pyrogram tgcrypto duckduckgo_search beautifulsoup4 pillow
 
       - name: Executar Renderizacao
         env:
