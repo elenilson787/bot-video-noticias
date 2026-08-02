@@ -1,0 +1,33 @@
+name: Renderizar Video Longo
+on:
+  repository_dispatch:
+    types: [render_video]
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Instalar Dependencias
+        run: |
+          pip install google-genai python-telegram-bot trafilatura edge-tts requests pyrogram tgcrypto
+
+      - name: Executar Renderizacao
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          NEWS_URL: ${{ github.event.client_payload.news_url }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+        run: python main_render.py
