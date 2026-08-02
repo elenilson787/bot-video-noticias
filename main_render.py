@@ -27,41 +27,45 @@ def salvar_imagem_sem_distorcao(binary_content, target_path):
     """Corta e ajusta a imagem em 16:9 (1920x1080) SEM ESTICAR ou deformar"""
     try:
         img = Image.open(BytesIO(binary_content)).convert('RGB')
-        # Aplica o corte inteligente mantendo a proporção original
         img_fitted = ImageOps.fit(img, (1920, 1080), Image.Resampling.LANCZOS)
         img_fitted.save(target_path, 'JPEG', quality=95)
         return True
     except Exception as e:
-        print(f"⚠️ Imagem corrompida/inválida descartada: {e}")
+        print(f"⚠️ Imagem descartada: {e}")
         return False
 
-def baixar_clip_youtube(termo_busca, output_path):
-    """Busca no YouTube e baixa apenas um trecho de 5 segundos em MP4 sem áudio"""
+def buscar_wikimedia_commons(termo):
+    """Busca fotos reais no Wikimedia Commons (Livre de bloqueios em Datacenters)"""
     try:
-        print(f"   🎬 Tentando baixar trecho em vídeo do YouTube: '{termo_busca}'...")
-        # Baixa apenas os primeiros 5 segundos do primeiro vídeo encontrado
-        cmd = [
-            "yt-dlp",
-            f"ytsearch1:{termo_busca} noticias",
-            "--download-sections", "*0-5",
-            "-f", "bestvideo[ext=mp4][height<=1080]/best[ext=mp4]/best",
-            "-o", output_path,
-            "--no-playlist",
-            "--quiet",
-            "--no-warnings"
-        ]
-        subprocess.run(cmd, check=True, timeout=25)
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 100000:
-            return True
+        url = "https://commons.wikimedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "generator": "search",
+            "gsrsearch": f"{termo}",
+            "gsrlimit": "5",
+            "prop": "imageinfo",
+            "iiprop": "url",
+            "format": "json"
+        }
+        headers = {'User-Agent': 'BotNoticias/1.0 (https://github.com)'}
+        res = requests.get(url, params=params, headers=headers, timeout=6)
+        data = res.json()
+        pages = data.get("query", {}).get("pages", {})
+        for page_id, page_info in pages.items():
+            imageinfo = page_info.get("imageinfo", [])
+            if imageinfo:
+                img_url = imageinfo[0].get("url")
+                if img_url and any(img_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
+                    return img_url
     except Exception as e:
-        print(f"   ⚠️ Não foi possível baixar clipe de vídeo para '{termo_busca}': {e}")
-    return False
+        print(f"⚠️ Wikimedia search error: {e}")
+    return None
 
-def buscar_imagem_web(termo, tema_principal):
-    """Busca imagens reais da web ancoradas no tema da notícia"""
+def buscar_imagem_ddg(termo, tema_principal):
+    """Busca imagens no DuckDuckGo com Fallback"""
     query_composta = f"{tema_principal} {termo} foto noticia"
     try:
-        results = DDGS().images(keywords=query_composta, max_results=5)
+        results = DDGS().images(keywords=query_composta, max_results=3)
         if results:
             for item in results:
                 img_url = item.get("image")
@@ -70,6 +74,28 @@ def buscar_imagem_web(termo, tema_principal):
     except Exception:
         pass
     return None
+
+def baixar_clip_youtube(termo_busca, output_path):
+    """Tenta baixar 5 segundos de vídeo do YouTube com bypass de robô"""
+    try:
+        print(f"   🎬 Tentando baixar vídeo do YouTube: '{termo_busca}'...")
+        cmd = [
+            "yt-dlp",
+            f"ytsearch1:{termo_busca} noticias",
+            "--download-sections", "*0-5",
+            "-f", "bestvideo[ext=mp4][height<=1080]/best[ext=mp4]/best",
+            "-o", output_path,
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "--no-playlist",
+            "--quiet",
+            "--no-warnings"
+        ]
+        subprocess.run(cmd, check=True, timeout=20)
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 100000:
+            return True
+    except Exception as e:
+        print(f"   ⚠️ YouTube ignorado para '{termo_busca}': {e}")
+    return False
 
 def extrair_foto_capa_noticia(url):
     """Extrai a foto de capa original do site da notícia"""
@@ -109,29 +135,29 @@ async def main():
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
     # 3. Geração do Roteiro e Termos de Busca
-    print("🤖 Analisando a notícia e definindo cenas de vídeo e fotos...")
+    print("🤖 Analisando a notícia e definindo termos de busca...")
     client = OpenAI(api_key=openai_key)
     
     prompt = f"""
     Você é um diretor de edição de documentários de notícias.
-    1. Identifique o TEMA CENTRAL e PERSONAGENS PRINCIPAIS (ex: "Flávio Bolsonaro política senado", "Lula governo economia").
+    1. Identifique o TEMA CENTRAL e PERSONAGENS PRINCIPAIS da matéria.
     2. Crie um roteiro de 1.100 a 1.300 palavras (para um vídeo de 8 minutos) em 8 blocos narrativos.
-    3. Para cada bloco, crie 6 termos de busca específicos de ações ou pessoas para buscar vídeos/fotos (ex: "Flavio Bolsonaro discursando", "plenario do senado brasilia", "bandeira do brasil").
+    3. Para cada bloco, crie 6 termos de busca variados em português/inglês referentes a locais, pessoas ou conceitos reais (ex: "Gaza", "White House press conference", "Donald Trump speech", "United Nations flag", "Middle East map").
 
     Retorne ESTRITAMENTE um JSON no seguinte formato:
     {{
-      "tema_principal": "Tema central curto aqui",
+      "tema_principal": "Tema central curto",
       "roteiro": [
         {{
           "bloco": 1,
-          "narracao": "Texto longo narrado para este trecho...",
+          "narracao": "Texto longo narrado...",
           "termos_busca": [
-            "termo de acao 1",
-            "termo de acao 2",
-            "termo de acao 3",
-            "termo de acao 4",
-            "termo de acao 5",
-            "termo de acao 6"
+            "termo 1",
+            "termo 2",
+            "termo 3",
+            "termo 4",
+            "termo 5",
+            "termo 6"
           ]
         }}
       ]
@@ -144,21 +170,21 @@ async def main():
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um gerador de roteiros focado em cenas visuais realistas."},
+            {"role": "system", "content": "Você é um gerador de roteiros focado em diversidade visual concreta."},
             {"role": "user", "content": prompt}
         ],
         response_format={"type": "json_object"}
     )
     
     dados = json.loads(response.choices[0].message.content)
-    tema_principal = dados.get("tema_principal", "Notícias Brasil")
+    tema_principal = dados.get("tema_principal", "Notícias")
     roteiro = dados["roteiro"]
     print(f"🎯 Tema Central: [{tema_principal}]")
 
-    # 4. Processamento dos Blocos (Intercalando Vídeos e Fotos)
+    # 4. Processamento dos Blocos com Multi-Motor de Busca
     os.makedirs("output", exist_ok=True)
     concat_block_list = []
-    ultima_imagem_valida_path = None
+    pool_mids = [] # Guardará links de imagens bem-sucedidas para garantir variedade no fallback
 
     for idx, bloco in enumerate(roteiro):
         print(f"\n🎬 Processando Bloco {idx + 1}/{len(roteiro)}...")
@@ -179,7 +205,7 @@ async def main():
         duration = get_media_duration(audio_path)
         num_segments = max(1, math.ceil(duration / 6.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Duração: {duration:.1f}s | Montando {num_segments} cenas (vídeos/fotos)")
+        print(f"⏱️ Duração: {duration:.1f}s | Montando {num_segments} cenas")
 
         termos = bloco.get("termos_busca", [tema_principal])
         sub_videos_list = []
@@ -192,19 +218,18 @@ async def main():
 
             usou_video = False
 
-            # Tenta baixar um clipe de VÍDEO do YouTube em blocos alternados (ex: j=1, j=3...)
-            if j % 2 == 1:
+            # Tenta YouTube em 1 a cada 3 segmentos
+            if j % 3 == 1:
                 usou_video = baixar_clip_youtube(f"{tema_principal} {termo}", raw_video_path)
 
             if usou_video:
-                # Trata e padroniza o VÍDEO (remove áudio original, ajusta resolução 1920x1080 e força tempo do áudio)
-                print(f"   📹 Renderizando segmento de VÍDEO para: '{termo}'")
+                print(f"   📹 Renderizando clipe de VÍDEO para: '{termo}'")
                 cmd_ffmpeg_vid = [
                     "ffmpeg", "-y",
                     "-i", raw_video_path,
                     "-t", str(sub_duration),
                     "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,fps=25",
-                    "-an", # Desliga o som original do vídeo do YouTube
+                    "-an",
                     "-c:v", "libx264", "-pix_fmt", "yuv420p",
                     sub_video_path
                 ]
@@ -213,11 +238,11 @@ async def main():
                 except Exception:
                     usou_video = False
 
-            # Se não baixou vídeo, usa IMAGEM ajustada sem distorção (Ken Burns Effect)
+            # Se não usou vídeo, busca IMAGEM em múltiplos motores
             if not usou_video:
                 imagem_salva = False
 
-                # Primeira cena usa capa oficial se existir
+                # 1. Foto de capa oficial na 1ª cena
                 if idx == 0 and j == 0 and foto_capa_original:
                     try:
                         res = requests.get(foto_capa_original, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
@@ -225,23 +250,44 @@ async def main():
                     except Exception:
                         imagem_salva = False
 
+                # 2. Busca no DuckDuckGo
                 if not imagem_salva:
-                    print(f"   📸 Buscando FOTO para: '{termo}'")
-                    media_url = buscar_imagem_web(termo, tema_principal)
+                    print(f"   📸 Buscando foto (DuckDuckGo): '{termo}'")
+                    media_url = buscar_imagem_ddg(termo, tema_principal)
                     if media_url:
                         try:
                             res = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
                             imagem_salva = salvar_imagem_sem_distorcao(res.content, img_path)
+                            if imagem_salva:
+                                pool_mids.append(res.content)
                         except Exception:
                             imagem_salva = False
 
-                # Reutiliza última foto válida se falhar
-                if not imagem_salva and ultima_imagem_valida_path and os.path.exists(ultima_imagem_valida_path):
-                    img_path = ultima_imagem_valida_path
-                elif imagem_salva:
-                    ultima_imagem_valida_path = img_path
+                # 3. Busca no Wikimedia Commons (Caso DDG falhe)
+                if not imagem_salva:
+                    print(f"   🏛️ Buscando foto (Wikimedia Commons): '{termo}'")
+                    media_url = buscar_wikimedia_commons(f"{termo}")
+                    if media_url:
+                        try:
+                            res = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
+                            imagem_salva = salvar_imagem_sem_distorcao(res.content, img_path)
+                            if imagem_salva:
+                                pool_mids.append(res.content)
+                        except Exception:
+                            imagem_salva = False
 
-                # Renderiza Foto com Zoom In / Zoom Out
+                # 4. Fallback Rotativo do Pool (Garante que NÃO repete sempre a foto do Trump)
+                if not imagem_salva:
+                    print("   ⚠️ Usando imagem do pool de variação da notícia.")
+                    if pool_mids:
+                        img_backup = pool_mids[(idx + j) % len(pool_mids)]
+                        salvar_imagem_sem_distorcao(img_backup, img_path)
+                    else:
+                        # Fallback geral Unsplash Notícias
+                        res = requests.get("https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200", timeout=10)
+                        salvar_imagem_sem_distorcao(res.content, img_path)
+
+                # Renderiza Foto com Efeito Zoom In/Out
                 frames = int(sub_duration * 25)
                 if (idx + j) % 2 == 0:
                     zoom_filter = f"scale=2560:1440,zoompan=z='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
@@ -260,7 +306,7 @@ async def main():
 
             sub_videos_list.append(f"file '{sub_video_path}'")
 
-        # C. Unir sub-cenas do bloco e sincronizar com áudio
+        # C. Unir sub-cenas do bloco e juntar com áudio
         sub_txt_path = os.path.abspath(f"output/sub_files_{idx}.txt")
         with open(sub_txt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(sub_videos_list))
@@ -282,7 +328,7 @@ async def main():
         subprocess.run(cmd_merge_audio, check=True)
         concat_block_list.append(f"file '{block_video_path}'")
 
-    # 5. Concatenar Todos os Blocos
+    # 5. Concatenar Todos os Blocos no Vídeo Final
     list_file_path = os.path.abspath("output/files.txt")
     final_video_path = os.path.abspath("final_video.mp4")
 
@@ -301,7 +347,7 @@ async def main():
     subprocess.run(cmd_join, check=True)
     print("🎉 Vídeo final montado com sucesso!")
 
-    # 6. Enviar para o Telegram
+    # 6. Enviar para o Telegram via Pyrogram
     print("📤 Enviando vídeo final no Telegram...")
     app = Client(
         "bot_session",
@@ -320,4 +366,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+        
