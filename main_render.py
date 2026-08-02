@@ -3,16 +3,29 @@ import json
 import asyncio
 import requests
 import subprocess
+from io import BytesIO
+from PIL import Image
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
 from openai import OpenAI
 from pyrogram import Client
 import trafilatura
 
-def buscar_imagem_web(query):
-    """Busca mídias reais da web (Google/DuckDuckGo) baseadas na notícia"""
+def salvar_imagem_valida(binary_content, target_path):
+    """Valida se o conteúdo é uma imagem real e salva como JPEG puro em RGB"""
     try:
-        results = DDGS().images(keywords=query, max_results=3)
+        img = Image.open(BytesIO(binary_content))
+        img = img.convert('RGB')
+        img.save(target_path, 'JPEG', quality=95)
+        return True
+    except Exception as e:
+        print(f"⚠️ Imagem inválida ou corrompida descartada: {e}")
+        return False
+
+def buscar_imagem_web(query):
+    """Busca mídias reais da web baseadas na notícia"""
+    try:
+        results = DDGS().images(keywords=query, max_results=5)
         if results:
             for item in results:
                 img_url = item.get("image")
@@ -23,7 +36,7 @@ def buscar_imagem_web(query):
     return "https://picsum.photos/1920/1080"
 
 def extrair_foto_capa_noticia(url):
-    """Extrai a foto de capa original do site da notícia (Open Graph)"""
+    """Extrai a foto de capa original do site da notícia"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         resp = requests.get(url, headers=headers, timeout=10)
@@ -105,7 +118,7 @@ async def main():
         print(f"🎬 Processando Bloco {idx + 1}/{len(roteiro)}...")
         
         audio_path = os.path.abspath(f"output/audio_{idx}.mp3")
-        media_path = os.path.abspath(f"output/media_{idx}")
+        img_path = os.path.abspath(f"output/img_{idx}.jpg")
         video_part = os.path.abspath(f"output/part_{idx}.mp4")
 
         # A. Gerar Voz com edge-tts
@@ -117,64 +130,49 @@ async def main():
         ]
         subprocess.run(cmd_tts, check=True)
 
-        # B. Selecionar Imagem/Vídeo
+        # B. Seleção e Validação da Imagem
+        imagem_salva = False
         if idx == 0 and foto_capa_original:
-            media_url = foto_capa_original
-            print("📸 Usando a foto de capa original para o Bloco 1.")
-        else:
+            try:
+                res = requests.get(foto_capa_original, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+                imagem_salva = salvar_imagem_valida(res.content, img_path)
+                if imagem_salva:
+                    print("📸 Foto de capa original validada e salva com sucesso.")
+            except Exception:
+                imagem_salva = False
+
+        if not imagem_salva:
             termo = bloco.get("termo_busca_imagem", "noticia brasil")
-            print(f"🔎 Buscando mídia real para: '{termo}'")
+            print(f"🔎 Buscando imagem para: '{termo}'")
             media_url = buscar_imagem_web(termo)
+            
+            try:
+                res = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+                imagem_salva = salvar_imagem_valida(res.content, img_path)
+            except Exception:
+                imagem_salva = False
 
-        # Identifica se a URL é vídeo ou imagem
-        is_video = any(media_url.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mov'])
-        
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            media_data = requests.get(media_url, headers=headers, timeout=10).content
-            ext = ".mp4" if is_video else ".jpg"
-            media_file = media_path + ext
-            with open(media_file, "wb") as f:
-                f.write(media_data)
-        except Exception as e:
-            print(f"⚠️ Falha ao baixar mídia de '{media_url}'. Usando imagem estática padrão.")
-            is_video = False
-            media_file = media_path + ".jpg"
-            fallback_data = requests.get("https://picsum.photos/1920/1080").content
-            with open(media_file, "wb") as f:
-                f.write(fallback_data)
+        # Fallback de emergência (caso a web retorne erro/bloqueio)
+        if not imagem_salva:
+            print("⚠️ Usando imagem genérica de fallback para o bloco.")
+            res = requests.get("https://picsum.photos/1920/1080", timeout=10)
+            salvar_imagem_valida(res.content, img_path)
 
-        # C. Configurar Filtros de Edição no FFmpeg
-        if is_video:
-            # Vídeo: Sem Zoom, apenas escala e corte
-            print("🎥 Mídia identificada como VÍDEO (sem zoom aplicado).")
-            cmd_ffmpeg = [
-                "ffmpeg", "-y",
-                "-stream_loop", "-1", "-i", media_file,
-                "-i", audio_path,
-                "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
-                "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
-                "-pix_fmt", "yuv420p", "-shortest", video_part
-            ]
+        # C. Configuração dos Efeitos de Zoom (Ken Burns)
+        if idx % 2 == 0:
+            zoom_filter = "scale=2560:1440,zoompan=z='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1250:s=1920x1080,fps=25"
         else:
-            # Imagem: Aplica Zoom In ou Zoom Out alternadamente
-            if idx % 2 == 0:
-                print("🔍 Aplicando filtro: ZOOM IN")
-                zoom_filter = "scale=2560:1440,zoompan=z='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1920x1080,fps=25"
-            else:
-                print("🔎 Aplicando filtro: ZOOM OUT")
-                zoom_filter = "scale=2560:1440,zoompan=z='max(1.25-zoom*0.0015,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1920x1080,fps=25"
+            zoom_filter = "scale=2560:1440,zoompan=z='max(1.25-zoom*0.0015,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1250:s=1920x1080,fps=25"
 
-            cmd_ffmpeg = [
-                "ffmpeg", "-y",
-                "-loop", "1", "-i", media_file,
-                "-i", audio_path,
-                "-vf", zoom_filter,
-                "-c:v", "libx264", "-tune", "stillimage",
-                "-c:a", "aac", "-b:a", "192k",
-                "-pix_fmt", "yuv420p", "-shortest", video_part
-            ]
-
+        cmd_ffmpeg = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", img_path,
+            "-i", audio_path,
+            "-vf", zoom_filter,
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-c:a", "aac", "-b:a", "192k",
+            "-pix_fmt", "yuv420p", "-shortest", video_part
+        ]
         subprocess.run(cmd_ffmpeg, check=True)
         concat_list.append(f"file '{video_part}'")
 
