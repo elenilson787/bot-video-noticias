@@ -21,11 +21,11 @@ jobs:
 
       - name: Instalar Dependencias
         run: |
-          pip install google-genai python-telegram-bot trafilatura edge-tts requests pyrogram tgcrypto
+          pip install openai python-telegram-bot trafilatura edge-tts requests pyrogram tgcrypto
 
       - name: Executar Renderizacao
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
