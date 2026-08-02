@@ -1,10 +1,27 @@
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
+# --- SERVIDOR HTTP SIMPLIFICADO PARA O PLANO GRATUITO DO RENDER ---
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot online!")
+
+def rodar_servidor_http():
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), DummyHandler)
+    server.serve_forever()
+
+# Inicia o servidor HTTP em segundo plano para o Render não fechar a aplicação
+threading.Thread(target=rodar_servidor_http, daemon=True).start()
+
 # ==============================================================================
-# --- LEITURA SEGURA VIA VARIÁVEIS DE AMBIENTE (ENV VARS) ---
+# --- LEITURA SEGURA VIA VARIÁVEIS DE AMBIENTE ---
 # ==============================================================================
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 REPO_OWNER = os.getenv("REPO_OWNER", "elenilson787")
@@ -16,7 +33,6 @@ async def disparar_github(update: Update, news_url: str):
     """Envia a requisição de disparo (repository_dispatch) para o GitHub Actions"""
     chat_id = update.message.chat_id
 
-    # Validação de segurança das chaves de ambiente
     if not GITHUB_TOKEN or not TELEGRAM_BOT_TOKEN:
         await update.message.reply_text("❌ Erro de configuração: Tokens não encontrados nas variáveis de ambiente.")
         print("❌ Faltam variáveis de ambiente (GITHUB_TOKEN ou TELEGRAM_BOT_TOKEN).")
@@ -47,7 +63,6 @@ async def disparar_github(update: Update, news_url: str):
         print(f"⚠️ Falha de conexão com a API do GitHub: {e}")
 
 async def comando_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Trata mensagens enviadas com /video <link>"""
     news_url = context.args[0] if context.args else None
     if news_url:
         await disparar_github(update, news_url)
@@ -55,7 +70,6 @@ async def comando_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Cole o link da notícia após o comando. Exemplo:\n/video https://g1.globo.com/...")
 
 async def receber_link_direto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Trata mensagens que contêm apenas o link direto (http/https) sem o comando /video"""
     texto = update.message.text.strip()
     if texto.startswith("http://") or texto.startswith("https://"):
         await disparar_github(update, texto)
@@ -68,8 +82,6 @@ if __name__ == "__main__":
         exit(1)
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Suporta tanto /video <link> quanto colar o link diretamente no chat
     app.add_handler(CommandHandler("video", comando_video))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receber_link_direto))
     
