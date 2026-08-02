@@ -23,42 +23,19 @@ def get_audio_duration(audio_path):
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return float(result.stdout.strip())
 
-def salvar_imagem_valida(binary_content, target_path):
-    """Valida se o conteúdo é uma imagem real e converte para JPEG RGB puro"""
+def validar_e_converter_imagem(binary_content):
+    """Valida a imagem e garante resolução mínima adequada"""
     try:
         img = Image.open(BytesIO(binary_content))
         img = img.convert('RGB')
-        img.save(target_path, 'JPEG', quality=95)
-        return True
-    except Exception as e:
-        print(f"⚠️ Imagem descartada/corrompida: {e}")
-        return False
-
-def buscar_imagem_web(termo_especifico, tema_principal):
-    """Busca mídias reais ancoradas obrigatoriamente no TEMA PRINCIPAL da notícia"""
-    query_composta = f"{tema_principal} {termo_especifico} foto noticia"
-    try:
-        results = DDGS().images(keywords=query_composta, max_results=5)
-        if results:
-            for item in results:
-                img_url = item.get("image")
-                if img_url and img_url.startswith("http"):
-                    return img_url
-    except Exception as e:
-        print(f"⚠️ Erro ao buscar imagem para '{query_composta}': {e}")
-    
-    # Segunda tentativa: busca apenas pelo Tema Principal da notícia
-    try:
-        results = DDGS().images(keywords=f"{tema_principal} foto noticia brasil", max_results=5)
-        if results:
-            for item in results:
-                img_url = item.get("image")
-                if img_url and img_url.startswith("http"):
-                    return img_url
+        width, height = img.size
+        if width < 300 or height < 200: # Ignora ícones/imagens muito pequenas
+            return None
+        output = BytesIO()
+        img.save(output, format='JPEG', quality=95)
+        return output.getvalue()
     except Exception:
-        pass
-
-    return None
+        return None
 
 def extrair_foto_capa_noticia(url):
     """Extrai a foto de capa original do site da notícia"""
@@ -73,6 +50,55 @@ def extrair_foto_capa_noticia(url):
         print(f"⚠️ Foto de capa original não encontrada: {e}")
     return None
 
+def montar_pool_de_imagens(tema_principal, termos_busca, foto_capa_bytes):
+    """Faz busca em lote no início para criar um pool diversificado de fotos do tema"""
+    pool = []
+
+    # 1. Adiciona a foto de capa oficial como primeira imagem
+    if foto_capa_bytes:
+        img_valid = validar_e_converter_imagem(foto_capa_bytes)
+        if img_valid:
+            pool.append(img_valid)
+
+    # 2. Monta as consultas de busca jornalística
+    queries = [
+        tema_principal,
+        f"{tema_principal} jogo futebol",
+        f"{tema_principal} noticia"
+    ]
+    for t in termos_busca:
+        if t and t not in queries:
+            queries.append(f"{tema_principal} {t}")
+
+    print(f"🔎 Coletando pool de imagens reais para o tema: [{tema_principal}]...")
+    ddgs = DDGS()
+    
+    for q in queries[:5]: # Executa no máximo 5 consultas para evitar bloqueios
+        try:
+            results = ddgs.images(keywords=f"{q} foto", max_results=8)
+            if results:
+                for item in results:
+                    url = item.get("image")
+                    if url and url.startswith("http"):
+                        try:
+                            res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
+                            if res.status_code == 200:
+                                valid_bytes = validar_e_converter_imagem(res.content)
+                                if valid_bytes and valid_bytes not in pool:
+                                    pool.append(valid_bytes)
+                                    print(f"   ✅ Foto capturada ({len(pool)} no pool)")
+                                    if len(pool) >= 30:
+                                        break
+                        except Exception:
+                            continue
+            if len(pool) >= 30:
+                break
+        except Exception as e:
+            print(f"⚠️ Aviso na consulta '{q}': {e}")
+
+    print(f"📸 Pool finalizado com {len(pool)} imagens reais e validadas!")
+    return pool
+
 async def main():
     # 1. Leitura de Variáveis de Ambiente
     news_url = os.getenv("NEWS_URL")
@@ -86,9 +112,19 @@ async def main():
         raise ValueError("❌ Erro: Variáveis de ambiente obrigatórias não encontradas!")
 
     print(f"📥 Extraindo texto da notícia: {news_url}")
-    foto_capa_original = extrair_foto_capa_noticia(news_url)
+    
+    # Baixar capa original se existir
+    foto_capa_url = extrair_foto_capa_noticia(news_url)
+    foto_capa_bytes = None
+    if foto_capa_url:
+        try:
+            res_capa = requests.get(foto_capa_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+            if res_capa.status_code == 200:
+                foto_capa_bytes = res_capa.content
+        except Exception:
+            pass
 
-    # 2. Extração da Notícia
+    # 2. Extração do texto
     downloaded = trafilatura.fetch_url(news_url)
     if not downloaded:
         raise Exception("Não foi possível acessar a URL informada.")
@@ -97,35 +133,24 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Geração do Roteiro na OpenAI API (com Ancoragem de Tema Global)
-    print("🤖 Analisando conteúdo da notícia e identificando o TEMA CENTRAL...")
+    # 3. Geração do Roteiro e Termos de Busca na OpenAI
+    print("🤖 Analisando conteúdo da notícia com a OpenAI...")
     client = OpenAI(api_key=openai_key)
     
     prompt = f"""
-    Você é um editor executivo de telejornalismo. Leia o texto da notícia e:
-    1. Identifique o TEMA CENTRAL e as ENTIDADES PRINCIPAIS da matéria em até 4 palavras (ex: "Lula convenção PT eleições", "Mercado financeiro alta dólar", "Guerra Ucrânia conflito").
-    2. Crie um roteiro de 1.100 a 1.300 palavras (para um vídeo de 8 minutos) dividido em 8 blocos narrativos.
-    3. Para cada bloco, forneça uma lista de 6 a 8 sub-termos de busca em português referentes ao trecho narrado.
-
-    REGRA DE OURO PARA IMAGENS:
-    - NUNCA use termos genéricos como "idosos", "educação", "tecnologia", "dinheiro" isoladamente.
-    - Todos os sub-termos devem se referir DIRETAMENTE ao contexto do assunto ou personagens da notícia.
+    Você é um editor executivo de telejornalismo. Analise o texto da notícia e:
+    1. Identifique o TEMA CENTRAL e ENTIDADES PRINCIPAIS em até 4 palavras (ex: "Racismo jogo Paulista Sub 15 arbitro Marcos").
+    2. Crie 4 termos de busca adicionais diretamente relacionados ao contexto da matéria.
+    3. Crie um roteiro completo de 1.100 a 1.300 palavras (para um vídeo de 8 minutos) dividido em exatamente 8 blocos narrativos.
 
     Retorne ESTRITAMENTE um JSON no seguinte formato:
     {{
-      "tema_principal": "ENTIDADES E TEMA CENTRAL AQUI",
+      "tema_principal": "Tema central curto aqui",
+      "termos_busca": ["termo 1", "termo 2", "termo 3", "termo 4"],
       "roteiro": [
         {{
           "bloco": 1,
-          "narracao": "Texto longo narrado para este trecho...",
-          "termos_busca_imagens": [
-            "subtermo 1",
-            "subtermo 2",
-            "subtermo 3",
-            "subtermo 4",
-            "subtermo 5",
-            "subtermo 6"
-          ]
+          "narracao": "Texto longo narrado para este trecho..."
         }}
       ]
     }}
@@ -137,7 +162,7 @@ async def main():
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um gerador de roteiros jornalísticos focado em precisão contextual rigorosa."},
+            {"role": "system", "content": "Você é um gerador de roteiros jornalísticos focado em precisão contextual."},
             {"role": "user", "content": prompt}
         ],
         response_format={"type": "json_object"}
@@ -145,23 +170,21 @@ async def main():
     
     dados = json.loads(response.choices[0].message.content)
     tema_principal = dados.get("tema_principal", "Notícias Brasil")
+    termos_busca = dados.get("termos_busca", [])
     roteiro = dados["roteiro"]
-    print(f"🎯 Tema Central Identificado pela IA: [{tema_principal}]")
-    print(f"✅ Roteiro gerado! Total de blocos: {len(roteiro)}")
 
-    # 4. Processamento das Mídias com Fallback Inteligente
+    # 4. Monta o Pool de Imagens
+    pool_imagens = montar_pool_de_imagens(tema_principal, termos_busca, foto_capa_bytes)
+    
+    if not pool_imagens:
+        # Fallback de emergência caso todas as buscas falhem
+        res_fall = requests.get("https://images.unsplash.com/photo-1541872703-74c5e44368f9?w=1200", timeout=10)
+        pool_imagens.append(validar_e_converter_imagem(res_fall.content))
+
+    # 5. Processamento dos Blocos com Alternância Cíclica de Imagens
     os.makedirs("output", exist_ok=True)
     concat_block_list = []
-    ultima_imagem_valida_bytes = None
-
-    # Baixar a capa original como primeiro backup oficial
-    if foto_capa_original:
-        try:
-            res_capa = requests.get(foto_capa_original, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-            if res_capa.status_code == 200:
-                ultima_imagem_valida_bytes = res_capa.content
-        except Exception:
-            pass
+    global_img_index = 0
 
     for idx, bloco in enumerate(roteiro):
         print(f"\n🎬 Processando Bloco {idx + 1}/{len(roteiro)}...")
@@ -178,48 +201,24 @@ async def main():
         ]
         subprocess.run(cmd_tts, check=True)
 
-        # B. Duração e divisão de imagens (~7s por imagem)
+        # B. Calcular duração e quantidade de imagens (~7s cada)
         duration = get_audio_duration(audio_path)
         num_images = max(1, math.ceil(duration / 7.0))
         sub_duration = duration / num_images
-        print(f"⏱️ Duração: {duration:.1f}s | Processando {num_images} imagens ancoradas ao tema...")
+        print(f"⏱️ Duração: {duration:.1f}s | Montando {num_images} segmentos de ~{sub_duration:.1f}s")
 
-        termos = bloco.get("termos_busca_imagens", [tema_principal])
         sub_videos_list = []
 
         for j in range(num_images):
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
-            
-            termo = termos[j % len(termos)]
-            imagem_salva = False
 
-            # Primeira imagem do primeiro bloco usa a capa oficial da matéria
-            if idx == 0 and j == 0 and ultima_imagem_valida_bytes:
-                imagem_salva = salvar_imagem_valida(ultima_imagem_valida_bytes, img_path)
+            # Seleciona a próxima imagem do pool em formato circular
+            img_bytes = pool_imagens[global_img_index % len(pool_imagens)]
+            global_img_index += 1
 
-            if not imagem_salva:
-                print(f"   🔎 Imagem {j+1}/{num_images} | Busca: [{tema_principal}] + [{termo}]")
-                media_url = buscar_imagem_web(termo, tema_principal)
-                if media_url:
-                    try:
-                        res = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-                        if res.status_code == 200:
-                            imagem_salva = salvar_imagem_valida(res.content, img_path)
-                            if imagem_salva:
-                                ultima_imagem_valida_bytes = res.content # Atualiza backup
-                    except Exception:
-                        imagem_salva = False
-
-            # FALLBACK DE SEGURANÇA SEM PICSUM: Reutiliza a última imagem válida da notícia
-            if not imagem_salva:
-                print("   ⚠️ Busca externa falhou. Reutilizando foto contextual válida anterior...")
-                if ultima_imagem_valida_bytes:
-                    salvar_imagem_valida(ultima_imagem_valida_bytes, img_path)
-                else:
-                    # Caso extremo onde nem a foto de capa baixou
-                    res = requests.get("https://images.unsplash.com/photo-1541872703-74c5e44368f9?w=1200", timeout=10)
-                    salvar_imagem_valida(res.content, img_path)
+            with open(img_path, "wb") as f:
+                f.write(img_bytes)
 
             # Efeito Zoom In / Zoom Out Alternado
             frames = int(sub_duration * 25)
@@ -239,7 +238,7 @@ async def main():
             subprocess.run(cmd_sub_ffmpeg, check=True)
             sub_videos_list.append(f"file '{sub_video_path}'")
 
-        # C. Unir sub-imagens e sincronizar com áudio
+        # C. Unir sub-imagens do bloco e juntar com áudio
         sub_txt_path = os.path.abspath(f"output/sub_files_{idx}.txt")
         with open(sub_txt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(sub_videos_list))
@@ -261,7 +260,7 @@ async def main():
         subprocess.run(cmd_merge_audio, check=True)
         concat_block_list.append(f"file '{block_video_path}'")
 
-    # 5. Concatenar Blocos no Vídeo Final
+    # 6. Concatenar Blocos no Vídeo Final
     list_file_path = os.path.abspath("output/files.txt")
     final_video_path = os.path.abspath("final_video.mp4")
 
@@ -280,7 +279,7 @@ async def main():
     subprocess.run(cmd_join, check=True)
     print("🎉 Vídeo final montado com sucesso!")
 
-    # 6. Enviar para o Telegram via Pyrogram
+    # 7. Enviar para o Telegram via Pyrogram
     print("📤 Enviando vídeo final no Telegram...")
     app = Client(
         "bot_session",
