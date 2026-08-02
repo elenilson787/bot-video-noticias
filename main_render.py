@@ -3,7 +3,7 @@ import json
 import asyncio
 import requests
 import subprocess
-from google import genai
+from openai import OpenAI
 from pyrogram import Client
 import trafilatura
 
@@ -11,14 +11,14 @@ async def main():
     # 1. Leitura e Validação de Variáveis de Ambiente
     news_url = os.getenv("NEWS_URL")
     chat_id = os.getenv("CHAT_ID")
-    gemini_key = os.getenv("GEMINI_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
     pexels_key = os.getenv("PEXELS_API_KEY")
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     telegram_api_id = os.getenv("TELEGRAM_API_ID")
     telegram_api_hash = os.getenv("TELEGRAM_API_HASH")
 
-    if not all([news_url, chat_id, gemini_key, pexels_key, telegram_token, telegram_api_id, telegram_api_hash]):
-        raise ValueError("❌ Erro: Uma ou mais variáveis de ambiente obrigatórias não foram definidas nas Secrets!")
+    if not all([news_url, chat_id, openai_key, pexels_key, telegram_token, telegram_api_id, telegram_api_hash]):
+        raise ValueError("❌ Erro: Uma ou mais variáveis de ambiente obrigatórias não foram encontradas nas Secrets!")
 
     print(f"📥 Extraindo texto da notícia: {news_url}")
     
@@ -31,35 +31,41 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Geração do Roteiro no Gemini API
-    print("🤖 Solicitando roteiro estruturado ao Gemini...")
-    client = genai.Client(api_key=gemini_key)
+    # 3. Geração do Roteiro na OpenAI API (gpt-4o-mini)
+    print("🤖 Solicitando roteiro estruturado à OpenAI...")
+    client = OpenAI(api_key=openai_key)
     
     prompt = f"""
     Você é um roteirista documental profissional. Com base no texto a seguir, crie um roteiro completo de 1.100 a 1.300 palavras (para um vídeo de 8 minutos).
     Divida o conteúdo em exatamente 8 blocos narrativos.
 
-    Retorne ESTRITAMENTE um JSON no seguinte formato:
-    [
-      {{
-        "bloco": 1,
-        "narracao": "Texto longo narrado para este trecho...",
-        "keywords_ingles": ["word1", "word2", "word3"]
-      }}
-    ]
+    Retorne ESTRITAMENTE um JSON com a chave "roteiro" no seguinte formato:
+    {{
+      "roteiro": [
+        {{
+          "bloco": 1,
+          "narracao": "Texto longo narrado para este trecho...",
+          "keywords_ingles": ["word1", "word2", "word3"]
+        }}
+      ]
+    }}
 
     Notícia:
     {texto_noticia}
     """
 
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt,
-        config={'response_mime_type': 'application/json'}
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Você é um gerador de roteiros que responde exclusivamente no formato JSON solicitado."},
+            {"role": "user", "content": prompt}
+        ],
+        response_format={"type": "json_object"}
     )
     
-    roteiro = json.loads(response.text)
-    print(f"✅ Roteiro gerado com sucesso! Total de blocos: {len(roteiro)}")
+    dados = json.loads(response.choices[0].message.content)
+    roteiro = dados["roteiro"]
+    print(f"✅ Roteiro gerado com sucesso via OpenAI! Total de blocos: {len(roteiro)}")
 
     # 4. Geração de Mídias (Áudio + Imagem) e Renderização dos Blocos
     os.makedirs("output", exist_ok=True)
@@ -72,7 +78,7 @@ async def main():
         img_path = os.path.abspath(f"output/img_{idx}.jpg")
         video_part = os.path.abspath(f"output/part_{idx}.mp4")
 
-        # A. Gerar Voz com edge-tts (lista imune a quebras por aspas no texto)
+        # A. Gerar Voz com edge-tts
         cmd_tts = [
             "edge-tts",
             "--text", bloco["narracao"],
@@ -99,7 +105,6 @@ async def main():
             print(f"⚠️ Erro/Timeout na busca no Pexels ({e}). Usando imagem genérica.")
             img_url = "https://picsum.photos/1920/1080"
 
-        # Baixa a imagem selecionada
         img_data = requests.get(img_url, timeout=10).content
         with open(img_path, "wb") as f:
             f.write(img_data)
@@ -116,7 +121,6 @@ async def main():
         ]
         subprocess.run(cmd_ffmpeg, check=True)
         
-        # Guarda caminho absoluto para concatenar sem erros
         concat_list.append(f"file '{video_part}'")
 
     # 5. Concatenar Todos os Blocos Renderizados
