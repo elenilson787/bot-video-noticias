@@ -1,96 +1,159 @@
-import os, json, asyncio, requests, subprocess
+import os
+import json
+import asyncio
+import requests
+import subprocess
 from google import genai
 from pyrogram import Client
 import trafilatura
 
-# 1. Extrai a notícia
-url = os.getenv("NEWS_URL")
-downloaded = trafilatura.fetch_url(url)
-texto_noticia = trafilatura.extract(downloaded)
+async def main():
+    # 1. Leitura e Validação de Variáveis de Ambiente
+    news_url = os.getenv("NEWS_URL")
+    chat_id = os.getenv("CHAT_ID")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    pexels_key = os.getenv("PEXELS_API_KEY")
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    telegram_api_id = os.getenv("TELEGRAM_API_ID")
+    telegram_api_hash = os.getenv("TELEGRAM_API_HASH")
 
-# 2. Gera o Roteiro Ajustado para 7-9 Minutos com Gemini
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-prompt = f"""
-Você é um roteirista documental profissional. Com base no texto a seguir, crie um roteiro completo de 1.100 a 1.300 palavras (para um vídeo de 8 minutos).
-Divida o conteúdo em exatamente 8 blocos narrativos.
+    if not all([news_url, chat_id, gemini_key, pexels_key, telegram_token, telegram_api_id, telegram_api_hash]):
+        raise ValueError("❌ Erro: Uma ou mais variáveis de ambiente obrigatórias não foram definidas nas Secrets!")
 
-Retorne ESTRITAMENTE um JSON no seguinte formato:
-[
-  {{
-    "bloco": 1,
-    "narracao": "Texto longo narrado para este trecho...",
-    "keywords_ingles": ["word1", "word2", "word3"]
-  }},
-  ...
-]
+    print(f"📥 Extraindo texto da notícia: {news_url}")
+    
+    # 2. Extração da Notícia com Trafilatura
+    downloaded = trafilatura.fetch_url(news_url)
+    if not downloaded:
+        raise Exception("Não foi possível acessar a URL informada.")
+        
+    texto_noticia = trafilatura.extract(downloaded)
+    if not texto_noticia:
+        raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-Notícia: {texto_noticia}
-"""
+    # 3. Geração do Roteiro no Gemini API
+    print("🤖 Solicitando roteiro estruturado ao Gemini...")
+    client = genai.Client(api_key=gemini_key)
+    
+    prompt = f"""
+    Você é um roteirista documental profissional. Com base no texto a seguir, crie um roteiro completo de 1.100 a 1.300 palavras (para um vídeo de 8 minutos).
+    Divida o conteúdo em exatamente 8 blocos narrativos.
 
-response = client.models.generate_content(
-    model='gemini-2.5-flash',
-    contents=prompt,
-    config={'response_mime_type': 'application/json'}
-)
-roteiro = json.loads(response.text)
+    Retorne ESTRITAMENTE um JSON no seguinte formato:
+    [
+      {{
+        "bloco": 1,
+        "narracao": "Texto longo narrado para este trecho...",
+        "keywords_ingles": ["word1", "word2", "word3"]
+      }}
+    ]
 
-# 3. Processamento de Áudio (edge-tts) e Imagens por Bloco
-async def processar_midias():
+    Notícia:
+    {texto_noticia}
+    """
+
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt,
+        config={'response_mime_type': 'application/json'}
+    )
+    
+    roteiro = json.loads(response.text)
+    print(f"✅ Roteiro gerado com sucesso! Total de blocos: {len(roteiro)}")
+
+    # 4. Geração de Mídias (Áudio + Imagem) e Renderização dos Blocos
     os.makedirs("output", exist_ok=True)
     concat_list = []
-    
-    for idx, bloco in enumerate(roteiro):
-        audio_path = f"output/audio_{idx}.mp3"
-        video_part = f"output/part_{idx}.mp4"
-        
-        # Gerar Voz
-        cmd_tts = f'edge-tts --text "{bloco["narracao"]}" --voice "pt-BR-AntonioNeural" --write-media {audio_path}'
-        subprocess.run(cmd_tts, shell=True, check=True)
-        
-        # Buscar 1 Imagem/Vídeo no Pexels para o bloco
-        kw = "+".join(bloco["keywords_ingles"])
-        p_res = requests.get(
-            f"https://api.pexels.com/v1/search?query={kw}&per_page=1",
-            headers={"Authorization": os.getenv("PEXELS_API_KEY")}
-        ).json()
-        
-        img_url = p_res['photos'][0]['src']['landscape'] if p_res.get('photos') else "https://picsum.photos/1920/1080"
-        img_data = requests.get(img_url).content
-        img_path = f"output/img_{idx}.jpg"
-        with open(img_path, "wb") as f: f.write(img_data)
-        
-        # Renderizar Bloco via FFmpeg (Sem estourar RAM)
-        cmd_ffmpeg = (
-            f'ffmpeg -y -loop 1 -i {img_path} -i {audio_path} '
-            f'-c:v libx264 -tune stillimage -c:a aac -b:a 192k -pix_fmt yuv420p '
-            f'-shortest {video_part}'
-        )
-        subprocess.run(cmd_ffmpeg, shell=True, check=True)
-        concat_list.append(f"file 'part_{idx}.mp4'")
 
-    # Lista para juntar todas as partes
-    with open("output/files.txt", "w") as f:
+    for idx, bloco in enumerate(roteiro):
+        print(f"🎬 Processando Bloco {idx + 1}/{len(roteiro)}...")
+        
+        audio_path = os.path.abspath(f"output/audio_{idx}.mp3")
+        img_path = os.path.abspath(f"output/img_{idx}.jpg")
+        video_part = os.path.abspath(f"output/part_{idx}.mp4")
+
+        # A. Gerar Voz com edge-tts (lista imune a quebras por aspas no texto)
+        cmd_tts = [
+            "edge-tts",
+            "--text", bloco["narracao"],
+            "--voice", "pt-BR-AntonioNeural",
+            "--write-media", audio_path
+        ]
+        subprocess.run(cmd_tts, check=True)
+
+        # B. Buscar Imagem de fundo no Pexels
+        keywords = "+".join(bloco.get("keywords_ingles", ["news"]))
+        try:
+            headers = {"Authorization": pexels_key}
+            p_res = requests.get(
+                f"https://api.pexels.com/v1/search?query={keywords}&per_page=1",
+                headers=headers,
+                timeout=10
+            ).json()
+            
+            if p_res.get('photos') and len(p_res['photos']) > 0:
+                img_url = p_res['photos'][0]['src']['landscape']
+            else:
+                img_url = "https://picsum.photos/1920/1080"
+        except Exception as e:
+            print(f"⚠️ Erro/Timeout na busca no Pexels ({e}). Usando imagem genérica.")
+            img_url = "https://picsum.photos/1920/1080"
+
+        # Baixa a imagem selecionada
+        img_data = requests.get(img_url, timeout=10).content
+        with open(img_path, "wb") as f:
+            f.write(img_data)
+
+        # C. Renderizar o Bloco de Vídeo via FFmpeg
+        cmd_ffmpeg = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", img_path,
+            "-i", audio_path,
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-c:a", "aac", "-b:a", "192k",
+            "-pix_fmt", "yuv420p",
+            "-shortest", video_part
+        ]
+        subprocess.run(cmd_ffmpeg, check=True)
+        
+        # Guarda caminho absoluto para concatenar sem erros
+        concat_list.append(f"file '{video_part}'")
+
+    # 5. Concatenar Todos os Blocos Renderizados
+    list_file_path = os.path.abspath("output/files.txt")
+    final_video_path = os.path.abspath("final_video.mp4")
+
+    with open(list_file_path, "w", encoding="utf-8") as f:
         f.write("\n".join(concat_list))
 
-    # Unir todos os blocos no vídeo final de 8 minutos
-    cmd_join = "ffmpeg -y -f concat -safe 0 -i output/files.txt -c copy final_video.mp4"
-    subprocess.run(cmd_join, shell=True, check=True)
+    print("🔄 Unindo blocos em um único vídeo final...")
+    cmd_join = [
+        "ffmpeg", "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", list_file_path,
+        "-c", "copy",
+        final_video_path
+    ]
+    subprocess.run(cmd_join, check=True)
+    print("🎉 Vídeo final montado com sucesso!")
 
-asyncio.run(processar_midias())
-
-# 4. Enviar para o Telegram via Pyrogram (> 50MB)
-async def enviar_telegram():
+    # 6. Enviar Arquivo Final para o Telegram (Até 2 GB via Pyrogram)
+    print("📤 Enviando vídeo final no Telegram...")
     app = Client(
         "bot_session",
-        api_id=os.getenv("TELEGRAM_API_ID"),
-        api_hash=os.getenv("TELEGRAM_API_HASH"),
-        bot_token=os.getenv("TELEGRAM_BOT_TOKEN")
+        api_id=int(telegram_api_id),
+        api_hash=telegram_api_hash,
+        bot_token=telegram_token
     )
+
     async with app:
         await app.send_video(
-            chat_id=int(os.getenv("CHAT_ID")),
-            video="final_video.mp4",
-            caption=f"🎥 Vídeo de notícias concluído (~8 minutos)!\nFonte: {url}"
+            chat_id=int(chat_id),
+            video=final_video_path,
+            caption=f"🎥 Vídeo de notícias concluído (~8 minutos)!\nFonte: {news_url}"
         )
+    print("✅ Envio concluído com sucesso!")
 
-asyncio.run(enviar_telegram())
+if __name__ == "__main__":
+    asyncio.run(main())
