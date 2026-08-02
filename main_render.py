@@ -109,11 +109,12 @@ async def main():
         with open(img_path, "wb") as f:
             f.write(img_data)
 
-        # C. Renderizar o Bloco de Vídeo via FFmpeg
+        # C. Renderizar Bloco via FFmpeg (Filtro força 1920x1080 par para evitar erro de codec)
         cmd_ffmpeg = [
             "ffmpeg", "-y",
             "-loop", "1", "-i", img_path,
             "-i", audio_path,
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
             "-c:v", "libx264", "-tune", "stillimage",
             "-c:a", "aac", "-b:a", "192k",
             "-pix_fmt", "yuv420p",
