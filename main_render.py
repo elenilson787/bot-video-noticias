@@ -36,14 +36,19 @@ def salvar_imagem_sem_distorcao(binary_content, target_path):
         return False
 
 def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
-    """Gera imagem em 16:9 usando o Google Imagen 3 via API Oficial do Google AI Studio"""
+    """Gera imagem realista em 16:9 via Google Imagen 3 com proibição estrita de textos/letras"""
     if not gemini_key:
         return False
         
     url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:generateImages?key={gemini_key}"
     headers = {"Content-Type": "application/json"}
     
-    prompt_enriquecido = f"Editorial news photograph, realistic photojournalism, 8k resolution, cinematic lighting, {prompt_ingles}"
+    # Prompt de alta qualidade com regras de exclusão visual de letrinhas/placas
+    prompt_enriquecido = (
+        f"Award-winning documentary photojournalism, 8k resolution, cinematic lighting, realistic detail, {prompt_ingles}. "
+        f"NO text, NO written words, NO letters, NO scrabble blocks, NO signboards, NO posters, NO graphics."
+    )
+    
     payload = {
         "prompt": prompt_enriquecido,
         "config": {
@@ -54,8 +59,8 @@ def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
     }
     
     try:
-        print(f"   🎨 [Google Imagen 3] Gerando imagem: '{prompt_ingles[:45]}...'")
-        res = requests.post(url, headers=headers, json=payload, timeout=25)
+        print(f"   🎨 [Google Imagen 3] Gerando cena: '{prompt_ingles[:50]}...'")
+        res = requests.post(url, headers=headers, json=payload, timeout=30)
         if res.status_code == 200:
             data = res.json()
             generated_images = data.get("generatedImages", [])
@@ -67,7 +72,7 @@ def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
         else:
             print(f"   ⚠️ Erro Google Imagen ({res.status_code}): {res.text[:120]}")
     except Exception as e:
-        print(f"   ⚠️ Falha ao conectar no Google Imagen: {e}")
+        print(f"   ⚠️ Falha na conexão com Google Imagen: {e}")
     return False
 
 def buscar_pexels_photo(termo, pexels_key):
@@ -112,17 +117,24 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Análise da OpenAI (Narração estritamente em Português do Brasil)
-    print("🤖 Analisando notícia e gerando roteiro em Português do Brasil...")
+    # 3. Análise da OpenAI com Instruções Estritas de Roteiro e Cenas Contextuais a cada 10s
+    print("🤖 Gerando roteiro em Português (pt-BR) e ordens visuais de 10s para a IA...")
     client = OpenAI(api_key=openai_key)
     
     prompt_roteiro = f"""
-    Você é um diretor de arte e roteirista de telejornalismo brasileiro.
+    Você é um diretor de arte e roteirista de telejornalismo investigativo.
     
-    REGRAS OBRIGATÓRIAS:
-    1. O campo "narracao" DEVE SER ESTRITAMENTE ESCRITO EM PORTUGUÊS DO BRASIL (PT-BR), mesmo se a notícia original estiver em inglês.
-    2. Crie um roteiro fluido de 1.100 a 1.300 palavras dividido em 8 blocos narrativos em Português.
-    3. Para o campo "prompts_ia", crie 6 descrições visuais detalhadas EM INGLÊS por bloco para serem enviadas para o gerador de imagens do Google.
+    SUA MISSÃO:
+    1. Crie um roteiro narrado ESTRITAMENTE em PORTUGUÊS DO BRASIL (pt-BR) em 8 blocos narrativos.
+    2. Para CADA BLOCO, forneça uma lista com a ORDEM LITERAL DE CRIAÇÃO DAS CENAS (prompts visuais em Inglês).
+    3. Cada ordem visual deve corresponder a aproximadamente 10 SEGUNDOS de narração.
+
+    REGRAS CRÍTICAS PARA OS PROMPTS VISUAIS (EM INGLÊS):
+    - Crie descrições FOTOGRÁFICAS E REALISTAS do evento ou local sendo falado naquele exato momento.
+    - Se a fala for sobre declarações políticas: "A realistic press conference room with podium, microphones, and blurred flags in the background, dramatic lighting"
+    - Se a fala for sobre geografia/conflito: "Cinematic wide shot of a city skyline at sunset with dust clouds, atmospheric documentary style"
+    - Se a fala for sobre diplomacia: "A wide shot of an international summit conference table with diplomats seated, realistic photo"
+    - PROIBIDO ABSOLUTAMENTE: Letras de papel, blocos de madeira tipo Scrabble, textos escritos, palavras como 'VOTE' ou 'NEWS', máquinas de escrever ou gráficos conceituais.
 
     Retorne ESTRITAMENTE um JSON no formato:
     {{
@@ -130,13 +142,11 @@ async def main():
         {{
           "bloco": 1,
           "narracao": "Texto narrado exclusivamente em PORTUGUÊS DO BRASIL...",
-          "prompts_ia": [
-            "Detailed English photo prompt for scene 1",
-            "Detailed English photo prompt for scene 2",
-            "Detailed English photo prompt for scene 3",
-            "Detailed English photo prompt for scene 4",
-            "Detailed English photo prompt for scene 5",
-            "Detailed English photo prompt for scene 6"
+          "prompts_ia_10s": [
+            "Detailed realistic English visual prompt for first 10s scene",
+            "Detailed realistic English visual prompt for second 10s scene",
+            "Detailed realistic English visual prompt for third 10s scene",
+            "Detailed realistic English visual prompt for fourth 10s scene"
           ]
         }}
       ]
@@ -149,7 +159,7 @@ async def main():
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um roteirista que escreve narrações em Português do Brasil e prompts de imagem em Inglês."},
+            {"role": "system", "content": "Você é um diretor de arte focado em gerar descrições de cenas fotojornalísticas realistas e sem textos em tela."},
             {"role": "user", "content": prompt_roteiro}
         ],
         response_format={"type": "json_object"}
@@ -178,30 +188,30 @@ async def main():
         ]
         subprocess.run(cmd_tts, check=True)
 
-        # B. Duração e cálculo de cenas a cada ~7 segundos
+        # B. Duração e cálculo exato de imagens a cada ~10 segundos de fala
         duration = get_media_duration(audio_path)
-        num_segments = max(1, math.ceil(duration / 7.0))
+        num_segments = max(1, math.ceil(duration / 10.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Narração pt-BR: {duration:.1f}s | Gerando {num_segments} cenas (~{sub_duration:.1f}s cada)")
+        print(f"⏱️ Narração pt-BR: {duration:.1f}s | Criando {num_segments} cenas exclusivas de ~10s cada")
 
-        prompts_cenas = bloco.get("prompts_ia", [])
+        prompts_cenas = bloco.get("prompts_ia_10s", [])
         sub_videos_list = []
 
         for j in range(num_segments):
-            prompt_ia = prompts_cenas[j % len(prompts_cenas)] if prompts_cenas else "news photo, political news"
+            prompt_ia = prompts_cenas[j % len(prompts_cenas)] if prompts_cenas else "cinematic documentary scene, photojournalism"
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
             imagem_salva = False
 
-            # 1. Tenta gerar via Google Imagen 3
+            # 1. Tenta gerar a cena fotográfica via Google Imagen 3
             if gemini_key:
                 imagem_salva = gerar_imagem_google_imagen(prompt_ia, gemini_key, img_path)
 
-            # 2. Backup Pexels se o Google Imagen não estiver ativo ou falhar
+            # 2. Backup via Pexels se o Imagen falhar (com termos reais)
             if not imagem_salva and pexels_key:
-                print(f"   📸 [Backup Pexels] Buscando foto HD para a cena...")
-                img_url = buscar_pexels_photo("news politics background", pexels_key)
+                print(f"   📸 [Backup Pexels] Buscando foto documental...")
+                img_url = buscar_pexels_photo("press conference diplomacy skyline", pexels_key)
                 if img_url:
                     try:
                         res = requests.get(img_url, timeout=8)
@@ -209,9 +219,9 @@ async def main():
                     except Exception:
                         pass
 
-            # 3. Fallback de Segurança
+            # 3. Fallback visual seguro caso precise
             if not imagem_salva:
-                img = Image.new('RGB', (1920, 1080), color=(20, 30, 50))
+                img = Image.new('RGB', (1920, 1080), color=(15, 23, 42))
                 img.save(img_path, 'JPEG', quality=95)
 
             scene_counter += 1
@@ -219,9 +229,9 @@ async def main():
             # C. EDIÇÃO DE MOVIMENTO (Zoom In / Zoom Out Alternado)
             frames = int(sub_duration * 25)
             if scene_counter % 2 == 0:
-                zoom_filter = f"scale=2560:1440,zoompan=z='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
+                zoom_filter = f"scale=2560:1440,zoompan=z='min(zoom+0.0012,1.20)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
             else:
-                zoom_filter = f"scale=2560:1440,zoompan=z='max(1.25-zoom*0.0015,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
+                zoom_filter = f"scale=2560:1440,zoompan=z='max(1.20-zoom*0.0012,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
 
             cmd_sub_ffmpeg = [
                 "ffmpeg", "-y",
