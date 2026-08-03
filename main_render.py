@@ -13,8 +13,6 @@ from PIL import Image, ImageOps, ImageDraw
 from openai import OpenAI
 from pyrogram import Client
 import trafilatura
-from google import genai
-from google.genai import types
 
 # ==============================================================================
 # CONFIGURAÇÃO
@@ -65,32 +63,42 @@ def criar_imagem_placeholder_teste(numero_cena, texto_trecho, target_path):
         return False
 
 def gerar_imagem_google_imagen_realista(prompt_ingles, gemini_key, target_path):
-    """Gera imagem no estilo fotojornalismo hiper-realista via Google Imagen 3 (SDK Oficial)"""
+    """Gera imagem no estilo fotojornalismo hiper-realista via Google Imagen 3"""
     if not gemini_key:
         return False
         
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:generateImages?key={gemini_key}"
+    headers = {"Content-Type": "application/json"}
+    
     prompt_enriquecido = (
         f"Award-winning documentary photojournalism, realistic news photograph, 8k resolution, cinematic lighting, {prompt_ingles}. "
         f"NO text, NO written words, NO letters, NO logos, NO 3D renders, NO cartoon, NO illustration."
     )
     
+    payload = {
+        "prompt": prompt_enriquecido,
+        "config": {
+            "numberOfImages": 1,
+            "aspectRatio": "16:9",
+            "outputMimeType": "image/jpeg"
+        }
+    }
+    
     try:
-        client = genai.Client(api_key=gemini_key)
-        result = client.models.generate_images(
-            model='imagen-3.0-generate-002',
-            prompt=prompt_enriquecido,
-            config=types.GenerateImagesConfig(
-                number_of_images=1,
-                aspect_ratio="16:9",
-                output_mime_type="image/jpeg",
-            )
-        )
-        if result.generated_images:
-            img_bytes = result.generated_images[0].image.image_bytes
-            print("   ✅ Sucesso via Google Imagen 3 (SDK)!")
-            return salvar_imagem_sem_distorcao(img_bytes, target_path)
+        res = requests.post(url, headers=headers, json=payload, timeout=25)
+        if res.status_code == 200:
+            data = res.json()
+            generated_images = data.get("generatedImages", [])
+            if generated_images:
+                base64_str = generated_images[0].get("image", {}).get("imageBytes")
+                if base64_str:
+                    img_bytes = base64.b64decode(base64_str)
+                    print("   ✅ Sucesso via Google Imagen 3!")
+                    return salvar_imagem_sem_distorcao(img_bytes, target_path)
+        else:
+            print(f"   ⚠️ Resposta Google Imagen: {res.status_code} - {res.text[:80]}")
     except Exception as e:
-        print(f"   ⚠️ Erro de execução Google Imagen 3: {e}")
+        print(f"   ⚠️ Erro de conexão Google Imagen: {e}")
     return False
 
 def gerar_imagem_huggingface_realista(prompt_ingles, hf_token, target_path):
