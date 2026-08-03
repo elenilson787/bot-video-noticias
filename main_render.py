@@ -141,14 +141,14 @@ async def main():
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um gerador de roteiros focado estritamente em nomes de figuras públicas reais."},
+            {"role": "system", "content": "Você é um gerador de roteiros focado em nomes de figuras públicas reais."},
             {"role": "user", "content": prompt}
         ],
         response_format={"type": "json_object"}
     )
     
     dados = json.loads(response.choices[0].message.content)
-    figuras_gerais = dados.get("figuras_publicas_mencionadas", ["Noticia Brasil"])
+    figuras_gerais = dados.get("figuras_publicas_mencionadas") or ["Noticia Brasil"]
     roteiro = dados["roteiro"]
     print(f"👤 Figuras Públicas Identificadas: {figuras_gerais}")
 
@@ -188,7 +188,11 @@ async def main():
         sub_duration = duration / num_segments
         print(f"⏱️ Duração: {duration:.1f}s | Montando {num_segments} fotos (~{sub_duration:.1f}s por foto)")
 
-        pessoas_bloco = bloco.get("pessoas_citadas", figuras_gerais)
+        # Proteção contra lista vazia em pessoas_citadas
+        pessoas_bloco = bloco.get("pessoas_citadas")
+        if not pessoas_bloco:
+            pessoas_bloco = figuras_gerais
+
         sub_videos_list = []
 
         for j in range(num_segments):
@@ -235,22 +239,22 @@ async def main():
                     foto_backup = pool_fotos_reais[global_scene_counter % len(pool_fotos_reais)]
                     salvar_imagem_sem_distorcao(foto_backup, img_path)
                 else:
-                    # Tenta última busca genérica pelas figuras principais da matéria
                     figura_backup = figuras_gerais[0]
                     img_url = buscar_wikimedia_commons(figura_backup) or buscar_imagem_ddg(figura_backup)
                     if img_url:
-                        res = requests.get(img_url, timeout=8)
-                        salvar_imagem_sem_distorcao(res.content, img_path)
+                        try:
+                            res = requests.get(img_url, timeout=8)
+                            salvar_imagem_sem_distorcao(res.content, img_path)
+                        except Exception:
+                            pass
 
             # C. EDIÇÃO OBRIGATÓRIA EM TODAS AS FOTOS: Efeito Zoom In e Zoom Out
             global_scene_counter += 1
             frames = int(sub_duration * 25)
             
             if global_scene_counter % 2 == 0:
-                # Efeito Zoom In
                 zoom_filter = f"scale=2560:1440,zoompan=z='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
             else:
-                # Efeito Zoom Out
                 zoom_filter = f"scale=2560:1440,zoompan=z='max(1.25-zoom*0.0015,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
 
             cmd_sub_ffmpeg = [
