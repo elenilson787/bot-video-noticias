@@ -2,8 +2,8 @@ import os
 import json
 import math
 import time
+import base64
 import random
-import urllib.parse
 import asyncio
 import requests
 import subprocess
@@ -35,73 +35,75 @@ def salvar_imagem_sem_distorcao(binary_content, target_path):
         print(f"⚠️ Erro ao formatar imagem: {e}")
         return False
 
-def gerar_imagem_huggingface(prompt_ingles, hf_token, target_path):
-    """Gera imagem via Hugging Face API com fallback automático para Pollinations se falhar"""
-    url = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
-    headers = {"Authorization": f"Bearer {hf_token}"}
+def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
+    """Gera imagem em 16:9 usando o Google Imagen 3 via API Oficial do Google AI Studio"""
+    if not gemini_key:
+        return False
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:generateImages?key={gemini_key}"
+    headers = {"Content-Type": "application/json"}
     
-    prompt_enriquecido = f"Editorial news photograph, photojournalism, realistic news picture, cinematic lighting, 8k resolution, {prompt_ingles}"
+    prompt_enriquecido = f"Editorial news photograph, realistic photojournalism, 8k resolution, cinematic lighting, {prompt_ingles}"
     payload = {
-        "inputs": prompt_enriquecido,
-        "parameters": {
-            "width": 1024,
-            "height": 576
+        "prompt": prompt_enriquecido,
+        "config": {
+            "numberOfImages": 1,
+            "outputMimeType": "image/jpeg",
+            "aspectRatio": "16:9"
         }
     }
     
-    # Tentativa via Hugging Face
-    for tentativa in range(2):
-        try:
-            print(f"   🎨 [HF FLUX.1] Gerando imagem: '{prompt_ingles[:40]}...'")
-            res = requests.post(url, headers=headers, json=payload, timeout=25)
-            
-            if res.status_code == 200 and len(res.content) > 5000:
-                if salvar_imagem_sem_distorcao(res.content, target_path):
-                    time.sleep(2) # Pausa amigável para a API
-                    return True
-            elif res.status_code == 503:
-                print("   ⏳ Modelo aquecendo... aguardando 5s...")
-                time.sleep(5)
-        except Exception as e:
-            print(f"   ⚠️ Erro HF: {e}")
-
-    # BACKUP SEGURO: Se o Hugging Face falhar, usa a Pollinations.ai instantaneamente (nunca dá tela preta)
     try:
-        print(f"   🔄 [Backup IA] Gerando via Pollinations para salvar a cena...")
-        prompt_encoded = urllib.parse.quote(prompt_enriquecido)
-        seed = random.randint(1, 999999)
-        fallback_url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
-        res_fb = requests.get(fallback_url, timeout=15)
-        if res_fb.status_code == 200 and len(res_fb.content) > 5000:
-            if salvar_imagem_sem_distorcao(res_fb.content, target_path):
-                return True
+        print(f"   🎨 [Google Imagen 3] Gerando imagem: '{prompt_ingles[:45]}...'")
+        res = requests.post(url, headers=headers, json=payload, timeout=25)
+        if res.status_code == 200:
+            data = res.json()
+            generated_images = data.get("generatedImages", [])
+            if generated_images:
+                base64_str = generated_images[0].get("image", {}).get("imageBytes")
+                if base64_str:
+                    img_bytes = base64.b64decode(base64_str)
+                    return salvar_imagem_sem_distorcao(img_bytes, target_path)
+        else:
+            print(f"   ⚠️ Erro Google Imagen ({res.status_code}): {res.text[:120]}")
     except Exception as e:
-        print(f"   ⚠️ Erro no backup Pollinations: {e}")
+        print(f"   ⚠️ Falha ao conectar no Google Imagen: {e}")
+    return False
 
-    # ÚLTIMO RECURSO ABSOLUTO (Cria uma imagem de alta qualidade texturizada, NUNCA preta)
+def buscar_pexels_photo(termo, pexels_key):
+    """Busca foto HD de backup na API Oficial do Pexels"""
+    if not pexels_key:
+        return None
     try:
-        img = Image.new('RGB', (1920, 1080), color=(24, 34, 56))
-        img.save(target_path, 'JPEG', quality=95)
-        return True
-    except:
-        return False
+        headers = {"Authorization": pexels_key}
+        url = f"https://api.pexels.com/v1/search?query={termo}&per_page=6&orientation=landscape"
+        res = requests.get(url, headers=headers, timeout=8)
+        if res.status_code == 200:
+            photos = res.json().get("photos", [])
+            if photos:
+                photo = random.choice(photos)
+                return photo.get("src", {}).get("large2x") or photo.get("src", {}).get("large")
+    except Exception:
+        pass
+    return None
 
 async def main():
     # 1. Leitura de Variáveis de Ambiente
     news_url = os.getenv("NEWS_URL")
     chat_id = os.getenv("CHAT_ID")
     openai_key = os.getenv("OPENAI_API_KEY")
-    hf_token = os.getenv("HF_TOKEN")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    pexels_key = os.getenv("PEXELS_API_KEY")
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     telegram_api_id = os.getenv("TELEGRAM_API_ID")
     telegram_api_hash = os.getenv("TELEGRAM_API_HASH")
 
-    if not all([news_url, chat_id, openai_key, hf_token, telegram_token, telegram_api_id, telegram_api_hash]):
+    if not all([news_url, chat_id, openai_key, telegram_token, telegram_api_id, telegram_api_hash]):
         raise ValueError("❌ Erro: Variáveis de ambiente obrigatórias não encontradas!")
 
     print(f"📥 Extraindo texto da notícia: {news_url}")
 
-    # 2. Extração da Notícia
+    # 2. Extração do Conteúdo da Notícia
     downloaded = trafilatura.fetch_url(news_url)
     if not downloaded:
         raise Exception("Não foi possível acessar a URL informada.")
@@ -110,47 +112,44 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Análise da OpenAI
-    print("🤖 Analisando a notícia e gerando prompts de cena para a IA...")
+    # 3. Análise da OpenAI (Narração estritamente em Português do Brasil)
+    print("🤖 Analisando notícia e gerando roteiro em Português do Brasil...")
     client = OpenAI(api_key=openai_key)
     
     prompt_roteiro = f"""
-    Você é um diretor de arte e roteirista de telejornalismo.
-    1. Crie um roteiro de 1.100 a 1.300 palavras em 8 blocos narrativos.
-    2. Para CADA BLOCO, crie 6 PROMPTS VISUAIS DETALHADOS EM INGLÊS para serem enviados ao modelo de IA.
-
-    REGRAS PARA OS PROMPTS (EM INGLÊS):
-    - Devem descrever a cena fotograficamente correspondendo EXATAMENTE ao assunto narrado.
-    - Se a narração for sobre política/diplomacia: "A formal press conference at the White House press room with flags, microphones, wide shot"
-    - Se a narração for sobre conflito/geografia: "Aerial view of Gaza territory landscape with buildings and smoke in distance, news photography"
-    - Se a narração for sobre economia: "Close up of United States dollar bills and financial charts on a desk, dramatic lighting"
+    Você é um diretor de arte e roteirista de telejornalismo brasileiro.
+    
+    REGRAS OBRIGATÓRIAS:
+    1. O campo "narracao" DEVE SER ESTRITAMENTE ESCRITO EM PORTUGUÊS DO BRASIL (PT-BR), mesmo se a notícia original estiver em inglês.
+    2. Crie um roteiro fluido de 1.100 a 1.300 palavras dividido em 8 blocos narrativos em Português.
+    3. Para o campo "prompts_ia", crie 6 descrições visuais detalhadas EM INGLÊS por bloco para serem enviadas para o gerador de imagens do Google.
 
     Retorne ESTRITAMENTE um JSON no formato:
     {{
       "roteiro": [
         {{
           "bloco": 1,
-          "narracao": "Texto narrado para este trecho...",
+          "narracao": "Texto narrado exclusivamente em PORTUGUÊS DO BRASIL...",
           "prompts_ia": [
-            "Detailed English image prompt 1",
-            "Detailed English image prompt 2",
-            "Detailed English image prompt 3",
-            "Detailed English image prompt 4",
-            "Detailed English image prompt 5",
-            "Detailed English image prompt 6"
+            "Detailed English photo prompt for scene 1",
+            "Detailed English photo prompt for scene 2",
+            "Detailed English photo prompt for scene 3",
+            "Detailed English photo prompt for scene 4",
+            "Detailed English photo prompt for scene 5",
+            "Detailed English photo prompt for scene 6"
           ]
         }}
       ]
     }}
 
-    Notícia:
+    Notícia Original:
     {texto_noticia}
     """
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um diretor de arte especializado em prompts de imagem realistas em inglês."},
+            {"role": "system", "content": "Você é um roteirista que escreve narrações em Português do Brasil e prompts de imagem em Inglês."},
             {"role": "user", "content": prompt_roteiro}
         ],
         response_format={"type": "json_object"}
@@ -159,7 +158,7 @@ async def main():
     dados = json.loads(response.choices[0].message.content)
     roteiro = dados["roteiro"]
 
-    # 4. Geração Dinâmica de Imagens via IA
+    # 4. Geração de Mídia e Renderização
     os.makedirs("output", exist_ok=True)
     concat_block_list = []
     scene_counter = 0
@@ -170,7 +169,7 @@ async def main():
         audio_path = os.path.abspath(f"output/audio_{idx}.mp3")
         block_video_path = os.path.abspath(f"output/part_{idx}.mp4")
 
-        # A. Gerar Voz com edge-tts
+        # A. Gerar Voz pt-BR com edge-tts
         cmd_tts = [
             "edge-tts",
             "--text", bloco["narracao"],
@@ -183,19 +182,37 @@ async def main():
         duration = get_media_duration(audio_path)
         num_segments = max(1, math.ceil(duration / 7.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Duração: {duration:.1f}s | Gerando {num_segments} imagens (~{sub_duration:.1f}s por cena)")
+        print(f"⏱️ Narração pt-BR: {duration:.1f}s | Gerando {num_segments} cenas (~{sub_duration:.1f}s cada)")
 
         prompts_cenas = bloco.get("prompts_ia", [])
         sub_videos_list = []
 
         for j in range(num_segments):
-            prompt_ia = prompts_cenas[j % len(prompts_cenas)] if prompts_cenas else "news photo, international political news"
+            prompt_ia = prompts_cenas[j % len(prompts_cenas)] if prompts_cenas else "news photo, political news"
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
-            # 1. Gerar imagem inédita com IA (com duplo sistema de segurança contra tela preta)
-            print(f"   ✨ Cena {scene_counter + 1}/{num_segments * len(roteiro)}")
-            gerar_imagem_huggingface(prompt_ia, hf_token, img_path)
+            imagem_salva = False
+
+            # 1. Tenta gerar via Google Imagen 3
+            if gemini_key:
+                imagem_salva = gerar_imagem_google_imagen(prompt_ia, gemini_key, img_path)
+
+            # 2. Backup Pexels se o Google Imagen não estiver ativo ou falhar
+            if not imagem_salva and pexels_key:
+                print(f"   📸 [Backup Pexels] Buscando foto HD para a cena...")
+                img_url = buscar_pexels_photo("news politics background", pexels_key)
+                if img_url:
+                    try:
+                        res = requests.get(img_url, timeout=8)
+                        imagem_salva = salvar_imagem_sem_distorcao(res.content, img_path)
+                    except Exception:
+                        pass
+
+            # 3. Fallback de Segurança
+            if not imagem_salva:
+                img = Image.new('RGB', (1920, 1080), color=(20, 30, 50))
+                img.save(img_path, 'JPEG', quality=95)
 
             scene_counter += 1
 
@@ -217,7 +234,7 @@ async def main():
             subprocess.run(cmd_sub_ffmpeg, check=True)
             sub_videos_list.append(f"file '{sub_video_path}'")
 
-        # D. Sincronizar sub-cenas do bloco com o áudio
+        # D. Sincronizar sub-cenas do bloco com o áudio pt-BR
         sub_txt_path = os.path.abspath(f"output/sub_files_{idx}.txt")
         with open(sub_txt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(sub_videos_list))
