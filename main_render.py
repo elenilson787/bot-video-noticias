@@ -1,7 +1,6 @@
 import os
 import json
 import math
-import random
 import hashlib
 import asyncio
 import requests
@@ -26,50 +25,59 @@ def get_media_duration(file_path):
     return float(result.stdout.strip())
 
 def calcular_hash_imagem(binary_content):
-    """Gera um MD5 único dos bytes da imagem para evitar duplicadas"""
+    """Gera um MD5 único dos bytes para evitar fotos idênticas"""
     return hashlib.md5(binary_content).hexdigest()
 
 def salvar_imagem_sem_distorcao(binary_content, target_path):
-    """Ajusta a foto no enquadramento 16:9 (1920x1080) SEM esticar"""
+    """Ajusta a foto no enquadramento 16:9 (1920x1080) SEM esticar o rosto"""
     try:
         img = Image.open(BytesIO(binary_content)).convert('RGB')
         img_fitted = ImageOps.fit(img, (1920, 1080), Image.Resampling.LANCZOS)
         img_fitted.save(target_path, 'JPEG', quality=95)
         return True
     except Exception as e:
-        print(f"⚠️ Imagem inválida descartada: {e}")
+        print(f"⚠️ Imagem descartada: {e}")
         return False
 
-def buscar_wikimedia_commons(termo):
-    """Busca fotos e mapas contextuais no Wikimedia Commons (API Livre)"""
-    try:
-        url = "https://commons.wikimedia.org/w/api.php"
-        params = {
-            "action": "query",
-            "generator": "search",
-            "gsrsearch": f"{termo}",
-            "gsrlimit": "5",
-            "prop": "imageinfo",
-            "iiprop": "url",
-            "format": "json"
-        }
-        headers = {'User-Agent': 'BotNoticias/1.0 (https://github.com)'}
-        res = requests.get(url, params=params, headers=headers, timeout=6)
-        pages = res.json().get("query", {}).get("pages", {})
-        for page_id, page_info in pages.items():
-            imageinfo = page_info.get("imageinfo", [])
-            if imageinfo:
-                img_url = imageinfo[0].get("url")
-                if img_url and any(img_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
-                    return img_url
-    except Exception:
-        pass
+def buscar_imagem_wikipedia(termo):
+    """Busca fotos oficiais diretamente na API da Wikipedia (100% Livre de Bloqueios)"""
+    headers = {'User-Agent': 'BotNoticias/3.0 (https://github.com)'}
+    for lang in ["pt", "en"]:
+        try:
+            url_search = f"https://{lang}.wikipedia.org/w/api.php"
+            params_search = {
+                "action": "query",
+                "list": "search",
+                "srsearch": termo,
+                "utf8": "1",
+                "format": "json"
+            }
+            res_search = requests.get(url_search, params=params_search, headers=headers, timeout=6)
+            search_results = res_search.json().get("query", {}).get("search", [])
+            
+            if search_results:
+                page_title = search_results[0]["title"]
+                params_img = {
+                    "action": "query",
+                    "titles": page_title,
+                    "prop": "pageimages",
+                    "pithumbsize": "1200",
+                    "format": "json"
+                }
+                res_img = requests.get(url_search, params=params_img, headers=headers, timeout=6)
+                pages = res_img.json().get("query", {}).get("pages", {})
+                for p_id, p_info in pages.items():
+                    thumbnail = p_info.get("thumbnail", {}).get("source")
+                    if thumbnail:
+                        return thumbnail
+        except Exception:
+            pass
     return None
 
 def buscar_imagem_ddg(termo):
-    """Busca imagens e mapas contextuais no DuckDuckGo"""
+    """Busca fotos jornalísticas e geográficas no DuckDuckGo"""
     try:
-        results = DDGS().images(keywords=f"{termo}", max_results=4)
+        results = DDGS().images(keywords=f"{termo} noticia", max_results=3)
         if results:
             for item in results:
                 img_url = item.get("image")
@@ -80,7 +88,7 @@ def buscar_imagem_ddg(termo):
     return None
 
 def extrair_foto_capa_noticia(url):
-    """Extrai a foto de capa original do artigo da notícia"""
+    """Extrai a foto de capa original da matéria"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         resp = requests.get(url, headers=headers, timeout=10)
@@ -116,41 +124,24 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Análise da OpenAI com Termos Visuais Contextuais e Seguros
-    print("🤖 Analisando contexto da notícia e gerando termos de busca visuais e seguros...")
+    # 3. Análise da OpenAI
+    print("🤖 Gerando termos de busca contextuais baseados no texto...")
     client = OpenAI(api_key=openai_key)
     
     prompt = f"""
-    Você é um editor de arte e diretor de documentários jornalísticos.
-    Sua missão é analisar o texto da notícia e criar termos de busca VISUAIS EXATOS, CONTEXTUAIS E SEGUROS para acompanhar a narração.
-
-    REGRAS DE OURO PARA BUSCA DE IMAGEM:
-    1. CONTEXTO GEOGRÁFICO/LOCAL: Se o texto narrar ataques ou conflitos em uma região (ex: Faixa de Gaza, Ucrânia, Washington), NÃO busque por violência explícita. Busque por termos de contexto geográfico ou representação territorial, como:
-       - "Gaza Strip map"
-       - "Gaza aerial view"
-       - "Middle East geography map"
-       - "Washington DC aerial view"
-    2. FIGURAS PÚBLICAS E POLÍTICA: Se citar pessoas ou governos, busque pelos nomes reais ou locais oficiais:
-       - "Donald Trump speech"
-       - "White House press room"
-       - "Palácio do Planalto Brasília"
-       - "United Nations Assembly hall"
-    3. Cenas a cada 7 segundos: Para cada bloco narrativo, forneça de 5 a 7 termos de busca ULTRA CONTEXTUAIS em inglês ou português que correspondam EXATAMENTE ao assunto narrado naquele trecho específico.
+    Você é um diretor de arte de telejornalismo.
+    1. Crie um roteiro de 1.100 a 1.300 palavras em 8 blocos narrativos.
+    2. Identifique uma lista geral com os 5 a 8 NOMES DE PESSOAS, LOCAIS, MAPAS OU GOVERNOS mais importantes da matéria.
+    3. Para CADA BLOCO, forneça de 5 a 6 termos de busca específicos e variados (em inglês ou português) para acompanhar a narração sem apelar para violência explícita.
 
     Retorne ESTRITAMENTE um JSON no formato:
     {{
-      "figuras_gerais": ["Nome 1", "Local 1"],
+      "figuras_gerais": ["Nome/Local 1", "Nome/Local 2", "Nome/Local 3", "Nome/Local 4"],
       "roteiro": [
         {{
           "bloco": 1,
           "narracao": "Texto narrado para este trecho...",
-          "termos_busca_cenas": [
-            "termo contextual 1",
-            "termo contextual 2",
-            "termo contextual 3",
-            "termo contextual 4",
-            "termo contextual 5"
-          ]
+          "termos_busca_cenas": ["Termo 1", "Termo 2", "Termo 3", "Termo 4"]
         }}
       ]
     }}
@@ -162,23 +153,25 @@ async def main():
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um gerador de roteiros focado em representação visual contextual e segura para o YouTube."},
+            {"role": "system", "content": "Você é um gerador de roteiros focado em representação visual dinâmica e contextual."},
             {"role": "user", "content": prompt}
         ],
         response_format={"type": "json_object"}
     )
     
     dados = json.loads(response.choices[0].message.content)
-    figuras_gerais = dados.get("figuras_gerais") or ["Noticia Brasil"]
+    figuras_gerais = dados.get("figuras_gerais") or ["Notícia"]
     roteiro = dados["roteiro"]
 
-    # 4. Controle de Imagens Únicas e Anti-Repetição
+    # 4. Inicialização Dinâmica do Banco de Imagens (Apenas Conteúdo Real da Notícia)
     os.makedirs("output", exist_ok=True)
     concat_block_list = []
     pool_imagens_unicas = {}
     historico_exibicao = [] 
 
-    # Adiciona a capa oficial do artigo como opção inicial
+    print("⚡ Construindo banco de imagens dinâmico a partir dos temas da notícia...")
+    
+    # Adiciona a foto oficial de capa do artigo
     if foto_capa_original:
         try:
             res_capa = requests.get(foto_capa_original, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
@@ -187,6 +180,19 @@ async def main():
                 pool_imagens_unicas[h] = res_capa.content
         except Exception:
             pass
+
+    # Pré-busca fotos reais para os temas principais identificados pela IA
+    for entidade in figuras_gerais:
+        url_img = buscar_imagem_wikipedia(entidade) or buscar_imagem_ddg(entidade)
+        if url_img:
+            try:
+                res_ent = requests.get(url_img, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
+                if res_ent.status_code == 200:
+                    h = calcular_hash_imagem(res_ent.content)
+                    if h not in pool_imagens_unicas:
+                        pool_imagens_unicas[h] = res_ent.content
+            except Exception:
+                pass
 
     scene_counter = 0
 
@@ -205,11 +211,11 @@ async def main():
         ]
         subprocess.run(cmd_tts, check=True)
 
-        # B. Duração e cálculo exato de imagens (~7 segundos por imagem)
+        # B. Duração e cálculo de imagens (~7 segundos por imagem)
         duration = get_media_duration(audio_path)
         num_segments = max(1, math.ceil(duration / 7.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Narração: {duration:.1f}s | Criando {num_segments} cenas contextuais (~{sub_duration:.1f}s cada)")
+        print(f"⏱️ Duração: {duration:.1f}s | Criando {num_segments} cenas (~{sub_duration:.1f}s cada)")
 
         termos_cenas = bloco.get("termos_busca_cenas") or figuras_gerais
         sub_videos_list = []
@@ -222,47 +228,30 @@ async def main():
             imagem_salva = False
             bytes_imagem_escolhida = None
 
-            # 1. Primeira cena do vídeo usa a foto oficial da capa da matéria
-            if idx == 0 and j == 0 and pool_imagens_unicas:
-                bytes_imagem_escolhida = list(pool_imagens_unicas.values())[0]
-                imagem_salva = salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
-
-            # 2. Busca termo contextual no Wikimedia Commons (Mapas, Territórios, Fotos Oficiais)
-            if not imagem_salva:
-                print(f"   📸 Cena {scene_counter + 1} | Buscando imagem contextual (Wikimedia): '{termo}'")
-                img_url = buscar_wikimedia_commons(termo)
-                if img_url:
-                    try:
-                        res = requests.get(img_url, timeout=8)
+            # 1. Busca imagem real no Wikipedia ou DuckDuckGo para o termo da cena
+            print(f"   📸 Cena {scene_counter + 1} | Buscando: '{termo}'")
+            img_url = buscar_imagem_wikipedia(termo) or buscar_imagem_ddg(termo)
+            
+            if img_url:
+                try:
+                    res = requests.get(img_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
+                    if res.status_code == 200:
                         h = calcular_hash_imagem(res.content)
                         if h not in pool_imagens_unicas:
                             pool_imagens_unicas[h] = res.content
-                            bytes_imagem_escolhida = res.content
-                            imagem_salva = salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
-                    except Exception:
-                        imagem_salva = False
+                        bytes_imagem_escolhida = res.content
+                        imagem_salva = salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
+                except Exception as e:
+                    print(f"   ⚠️ Download falhou para '{termo}': {e}")
+                    imagem_salva = False
 
-            # 3. Busca termo contextual no DuckDuckGo
+            # 2. FALLBACK ANTI-REPETIÇÃO CONSECUTIVA (Usando apenas o pool dinâmico da notícia)
             if not imagem_salva:
-                print(f"   🔎 Cena {scene_counter + 1} | Buscando imagem contextual (DuckDuckGo): '{termo}'")
-                img_url = buscar_imagem_ddg(termo)
-                if img_url:
-                    try:
-                        res = requests.get(img_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
-                        h = calcular_hash_imagem(res.content)
-                        if h not in pool_imagens_unicas:
-                            pool_imagens_unicas[h] = res.content
-                            bytes_imagem_escolhida = res.content
-                            imagem_salva = salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
-                    except Exception:
-                        imagem_salva = False
-
-            # 4. FALLBACK INTELIGENTE ANTI-REPETIÇÃO CONSECUTIVA
-            if not imagem_salva:
-                print(f"   ⚠️ Reutilizando imagem do banco com filtro de variedade.")
+                print(f"   ⚠️ Selecionando foto do pool da notícia com filtro anti-duplicidade.")
                 todas_chaves_hashes = list(pool_imagens_unicas.keys())
                 
-                if len(todas_chaves_hashes) > 0:
+                if todas_chaves_hashes:
+                    # Impede repetição com a cena anterior e a penúltima
                     hashes_proibidos = historico_exibicao[-2:] if len(historico_exibicao) >= 2 else historico_exibicao[-1:]
                     hashes_permitidos = [h for h in todas_chaves_hashes if h not in hashes_proibidos]
                     
@@ -274,9 +263,10 @@ async def main():
                     salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
                     h_atual = hash_escolhido
                 else:
-                    res = requests.get("https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200", timeout=8)
+                    # Caso extremo: re-tenta busca geral pelo tema principal
+                    res = requests.get(buscar_imagem_ddg(figuras_gerais[0]), timeout=8)
                     salvar_imagem_sem_distorcao(res.content, img_path)
-                    h_atual = "fallback"
+                    h_atual = calcular_hash_imagem(res.content)
             else:
                 h_atual = calcular_hash_imagem(bytes_imagem_escolhida)
 
@@ -301,7 +291,7 @@ async def main():
             subprocess.run(cmd_sub_ffmpeg, check=True)
             sub_videos_list.append(f"file '{sub_video_path}'")
 
-        # D. Sincronizar sub-cenas do bloco com a narração
+        # D. Sincronizar sub-cenas do bloco com o áudio
         sub_txt_path = os.path.abspath(f"output/sub_files_{idx}.txt")
         with open(sub_txt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(sub_videos_list))
@@ -361,4 +351,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
+    
