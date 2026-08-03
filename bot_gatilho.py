@@ -1,4 +1,5 @@
 import os
+import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
@@ -54,13 +55,19 @@ async def disparar_github(update: Update, news_url: str):
     }
     
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        # Executamos a requisição de forma assíncrona sem travar a thread do Telegram
+        response = await asyncio.to_thread(requests.post, url, json=payload, headers=headers, timeout=10)
+        
         if response.status_code == 204:
             print(f"✅ Disparo enviado com sucesso para a URL: {news_url}")
+            await update.message.reply_text("⚡ Pipeline ativado no GitHub Actions! O vídeo será gerado e enviado aqui em alguns minutos.")
         else:
-            print(f"❌ Erro ao disparar. Status: {response.status_code} - {response.text}")
+            erro_msg = f"❌ Erro ao acionar o GitHub Actions (Status: {response.status_code})."
+            print(f"{erro_msg} Detalhes: {response.text}")
+            await update.message.reply_text(f"{erro_msg}\nVerifique as permissões do seu `GITHUB_TOKEN`.")
     except Exception as e:
         print(f"⚠️ Falha de conexão com a API do GitHub: {e}")
+        await update.message.reply_text(f"⚠️ Falha de conexão ao comunicar com o GitHub: {e}")
 
 async def comando_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     news_url = context.args[0] if context.args else None
@@ -86,4 +93,3 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receber_link_direto))
     
     app.run_polling()
-    
