@@ -34,25 +34,38 @@ def salvar_imagem_sem_distorcao(binary_content, target_path):
         print(f"⚠️ Erro ao formatar imagem: {e}")
         return False
 
-def gerar_imagem_ia_pollinations(prompt_ingles, target_path):
-    """Gera uma imagem hiper-realista inédita via IA (FLUX Model / Pollinations - 100% Grátis)"""
+def criar_imagem_fallback_local(target_path):
+    """Cria uma imagem 16:9 (1920x1080) elegante localmente caso a conexão falhe"""
     try:
-        # Adiciona termos de qualidade fotográfica e jornalística ao prompt
-        prompt_enriquecido = f"Editorial photojournalism, realistic news photo, cinematic lighting, 8k resolution, {prompt_ingles}"
-        prompt_encoded = urllib.parse.quote(prompt_enriquecido)
-        
-        # Semente aleatória para garantir que mesmo prompts parecidos gerem imagens 100% diferentes
-        seed = random.randint(1, 999999)
-        url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
-        
-        print(f"   🎨 Gerando imagem via IA: '{prompt_ingles[:50]}...'")
-        res = requests.get(url, timeout=25)
-        
-        if res.status_code == 200:
-            return salvar_imagem_sem_distorcao(res.content, target_path)
+        # Fundo escuro estilo estúdio jornalístico (Slate Blue)
+        img = Image.new('RGB', (1920, 1080), color=(15, 23, 42))
+        img.save(target_path, 'JPEG', quality=95)
+        return True
     except Exception as e:
-        print(f"   ⚠️ Falha ao gerar imagem via IA: {e}")
-    return False
+        print(f"⚠️ Erro ao criar fallback local: {e}")
+        return False
+
+def gerar_imagem_ia_pollinations(prompt_ingles, target_path):
+    """Gera imagem via Pollinations AI com tentativas e fallback local 100% seguro"""
+    prompt_enriquecido = f"Editorial photojournalism, realistic news photo, cinematic lighting, 8k resolution, {prompt_ingles}"
+    prompt_encoded = urllib.parse.quote(prompt_enriquecido)
+    
+    # Tenta até 3 vezes em caso de oscilação na API
+    for tentativa in range(3):
+        try:
+            seed = random.randint(1, 999999)
+            url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
+            print(f"   🎨 Gerando imagem via IA (Tentativa {tentativa + 1}/3)...")
+            res = requests.get(url, timeout=15)
+            
+            if res.status_code == 200 and len(res.content) > 5000:
+                if salvar_imagem_sem_distorcao(res.content, target_path):
+                    return True
+        except Exception as e:
+            print(f"   ⚠️ Oscilação na API: {e}")
+            
+    print("   ⚠️ Conexão offline ou lenta. Gerando imagem de estúdio local...")
+    return criar_imagem_fallback_local(target_path)
 
 async def main():
     # 1. Leitura de Variáveis de Ambiente
@@ -83,7 +96,7 @@ async def main():
     
     prompt_roteiro = f"""
     Você é um diretor de arte e roteirista de telejornalismo.
-    1. Crie um roteiro de 1.900 a 2.300 palavras em 12 blocos narrativos.
+    1. Crie um roteiro de 1.100 a 1.300 palavras em 8 blocos narrativos.
     2. Para CADA BLOCO, crie 6 PROMPTS VISUAIS DETALHADOS EM INGLÊS para serem enviados a uma IA geradora de imagens.
 
     REGRAS PARA OS PROMPTS DA IA (EM INGLÊS):
@@ -160,14 +173,9 @@ async def main():
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
-            # 1. GERAR IMAGEM ÚNICA COM IA
+            # 1. GERAR IMAGEM ÚNICA COM IA (COM FALLBACK LOCAL GARANTIDO)
             print(f"   ✨ Cena {scene_counter + 1}/{num_segments * len(roteiro)}")
-            gerou_sucesso = gerar_imagem_ia_pollinations(prompt_ia, img_path)
-
-            # Fallback de segurança se a requisição falhar
-            if not gerou_sucesso:
-                print("   ⚠️ Tentando prompt genérico de fallback na IA...")
-                gerar_imagem_ia_pollinations("breaking news background cinematic", img_path)
+            gerar_imagem_ia_pollinations(prompt_ia, img_path)
 
             scene_counter += 1
 
@@ -249,4 +257,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-                
+    
