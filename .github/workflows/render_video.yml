@@ -21,7 +21,8 @@ jobs:
 
       - name: Instalar Dependencias
         run: |
-          pip install openai python-telegram-bot trafilatura edge-tts requests pyrogram tgcrypto duckduckgo_search beautifulsoup4 pillow yt-dlp
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Executar Renderizacao
         env:
@@ -35,4 +36,3 @@ jobs:
           CHAT_ID: ${{ github.event.client_payload.chat_id }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python main_render.py
-        
