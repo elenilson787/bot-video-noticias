@@ -24,6 +24,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+          - name: Instalar Dependencias
+        run: |
+          pip install openai python-telegram-bot trafilatura edge-tts requests pyrogram tgcrypto duckduckgo_search beautifulsoup4 pillow
+
       - name: Executar Renderizacao
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
