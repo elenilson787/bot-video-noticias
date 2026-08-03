@@ -4,6 +4,7 @@ import math
 import time
 import base64
 import random
+import urllib.parse
 import asyncio
 import requests
 import subprocess
@@ -36,17 +37,16 @@ def salvar_imagem_sem_distorcao(binary_content, target_path):
         return False
 
 def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
-    """Gera imagem realista em 16:9 via Google Imagen 3 com proibição estrita de textos/letras"""
+    """Gera imagem realista em 16:9 via Google Imagen 3 (Google AI Studio)"""
     if not gemini_key:
         return False
         
     url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:generateImages?key={gemini_key}"
     headers = {"Content-Type": "application/json"}
     
-    # Prompt de alta qualidade com regras de exclusão visual de letrinhas/placas
     prompt_enriquecido = (
-        f"Award-winning documentary photojournalism, 8k resolution, cinematic lighting, realistic detail, {prompt_ingles}. "
-        f"NO text, NO written words, NO letters, NO scrabble blocks, NO signboards, NO posters, NO graphics."
+        f"Award-winning photojournalism, documentary style, 8k resolution, cinematic lighting, {prompt_ingles}. "
+        f"NO text, NO letters, NO words, NO logos."
     )
     
     payload = {
@@ -59,7 +59,6 @@ def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
     }
     
     try:
-        print(f"   🎨 [Google Imagen 3] Gerando cena: '{prompt_ingles[:50]}...'")
         res = requests.post(url, headers=headers, json=payload, timeout=30)
         if res.status_code == 200:
             data = res.json()
@@ -70,27 +69,48 @@ def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
                     img_bytes = base64.b64decode(base64_str)
                     return salvar_imagem_sem_distorcao(img_bytes, target_path)
         else:
-            print(f"   ⚠️ Erro Google Imagen ({res.status_code}): {res.text[:120]}")
+            print(f"   ⚠️ Google Imagen retornou status {res.status_code} (provável filtro de segurança).")
     except Exception as e:
-        print(f"   ⚠️ Falha na conexão com Google Imagen: {e}")
+        print(f"   ⚠️ Erro ao conectar no Google Imagen: {e}")
     return False
 
-def buscar_pexels_photo(termo, pexels_key):
-    """Busca foto HD de backup na API Oficial do Pexels"""
-    if not pexels_key:
-        return None
+def gerar_imagem_ia_pollinations(prompt_ingles, target_path):
+    """Gerador secundário de IA (FLUX Model) com semente aleatória para garantir imagens inéditas"""
     try:
+        prompt_enriquecido = f"Photojournalism, cinematic documentary shot, 8k photo, {prompt_ingles}"
+        prompt_encoded = urllib.parse.quote(prompt_enriquecido)
+        seed = random.randint(10000, 999999)
+        url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
+        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(url, headers=headers, timeout=25)
+        if res.status_code == 200 and len(res.content) > 5000:
+            return salvar_imagem_sem_distorcao(res.content, target_path)
+    except Exception as e:
+        print(f"   ⚠️ Erro no gerador IA secundário: {e}")
+    return False
+
+def buscar_pexels_photo_dinamico(prompt_ingles, pexels_key, target_path):
+    """Backup dinâmico que busca fotos no Pexels usando as palavras exatas da cena"""
+    if not pexels_key:
+        return False
+    try:
+        # Extrai palavras-chave do prompt
+        keywords = " ".join([word for word in prompt_ingles.split() if len(word) > 3][:3])
         headers = {"Authorization": pexels_key}
-        url = f"https://api.pexels.com/v1/search?query={termo}&per_page=6&orientation=landscape"
+        url = f"https://api.pexels.com/v1/search?query={keywords}&per_page=10&orientation=landscape"
         res = requests.get(url, headers=headers, timeout=8)
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
                 photo = random.choice(photos)
-                return photo.get("src", {}).get("large2x") or photo.get("src", {}).get("large")
+                img_url = photo.get("src", {}).get("large2x") or photo.get("src", {}).get("large")
+                if img_url:
+                    r = requests.get(img_url, timeout=8)
+                    return salvar_imagem_sem_distorcao(r.content, target_path)
     except Exception:
         pass
-    return None
+    return False
 
 async def main():
     # 1. Leitura de Variáveis de Ambiente
@@ -117,24 +137,25 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Análise da OpenAI com Instruções Estritas de Roteiro e Cenas Contextuais a cada 10s
-    print("🤖 Gerando roteiro em Português (pt-BR) e ordens visuais de 10s para a IA...")
+    # 3. Análise da OpenAI com Instruções de Prompts Seguros para IA a cada 10s
+    print("🤖 Gerando roteiro pt-BR e descrições visuais exclusivas para IA a cada 10s...")
     client = OpenAI(api_key=openai_key)
     
     prompt_roteiro = f"""
-    Você é um diretor de arte e roteirista de telejornalismo investigativo.
+    Você é um diretor de arte e roteirista de telejornalismo.
     
     SUA MISSÃO:
     1. Crie um roteiro narrado ESTRITAMENTE em PORTUGUÊS DO BRASIL (pt-BR) em 8 blocos narrativos.
-    2. Para CADA BLOCO, forneça uma lista com a ORDEM LITERAL DE CRIAÇÃO DAS CENAS (prompts visuais em Inglês).
-    3. Cada ordem visual deve corresponder a aproximadamente 10 SEGUNDOS de narração.
+    2. Para CADA BLOCO, forneça uma lista com 6 a 8 PROMPTS VISUAIS EXCLUSIVOS EM INGLÊS.
+    3. Cada prompt visual servirá para gerar UMA IMAGEM ÚNICA DE IA a cada 10 SEGUNDOS de narração.
 
-    REGRAS CRÍTICAS PARA OS PROMPTS VISUAIS (EM INGLÊS):
-    - Crie descrições FOTOGRÁFICAS E REALISTAS do evento ou local sendo falado naquele exato momento.
-    - Se a fala for sobre declarações políticas: "A realistic press conference room with podium, microphones, and blurred flags in the background, dramatic lighting"
-    - Se a fala for sobre geografia/conflito: "Cinematic wide shot of a city skyline at sunset with dust clouds, atmospheric documentary style"
-    - Se a fala for sobre diplomacia: "A wide shot of an international summit conference table with diplomats seated, realistic photo"
-    - PROIBIDO ABSOLUTAMENTE: Letras de papel, blocos de madeira tipo Scrabble, textos escritos, palavras como 'VOTE' ou 'NEWS', máquinas de escrever ou gráficos conceituais.
+    REGRAS OBRIGATÓRIAS PARA OS PROMPTS DA IA (EM INGLÊS):
+    - Crie descrições FOTOGRÁFICAS, SEGURAS E DOCUMENTAIS referentes ao que é falado naquele trecho.
+    - REGRAS DE SEGURANÇA (Para não bloquear o filtro da IA): NUNCA use palavras de violência explícita como "attack", "blood", "missile", "war", "explosion". Substitua por descrições diplomáticas ou territoriais seguras:
+      * Em vez de explosão/ataque: "wide aerial photograph of a Mediterranean coastal city at sunset, hazy atmosphere, cinematic documentary style"
+      * Em vez de política/discursos: "a formal press conference room with podium, microphones, blurred diplomatic flags background, soft lighting"
+      * Em vez de reuniões: "diplomats sitting around a grand conference table in an international summit, wide shot photo"
+    - PROIBIDO: NUNCA sugira letras, palavras escritas, placas, máquinas de escrever ou cartazes.
 
     Retorne ESTRITAMENTE um JSON no formato:
     {{
@@ -143,10 +164,12 @@ async def main():
           "bloco": 1,
           "narracao": "Texto narrado exclusivamente em PORTUGUÊS DO BRASIL...",
           "prompts_ia_10s": [
-            "Detailed realistic English visual prompt for first 10s scene",
-            "Detailed realistic English visual prompt for second 10s scene",
-            "Detailed realistic English visual prompt for third 10s scene",
-            "Detailed realistic English visual prompt for fourth 10s scene"
+            "Detailed safe visual prompt for 0-10s scene",
+            "Detailed safe visual prompt for 10-20s scene",
+            "Detailed safe visual prompt for 20-30s scene",
+            "Detailed safe visual prompt for 30-40s scene",
+            "Detailed safe visual prompt for 40-50s scene",
+            "Detailed safe visual prompt for 50-60s scene"
           ]
         }}
       ]
@@ -159,7 +182,7 @@ async def main():
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um diretor de arte focado em gerar descrições de cenas fotojornalísticas realistas e sem textos em tela."},
+            {"role": "system", "content": "Você é um diretor de arte especialista em prompts de imagem seguros para IA e sem filtros de bloqueio."},
             {"role": "user", "content": prompt_roteiro}
         ],
         response_format={"type": "json_object"}
@@ -192,34 +215,33 @@ async def main():
         duration = get_media_duration(audio_path)
         num_segments = max(1, math.ceil(duration / 10.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Narração pt-BR: {duration:.1f}s | Criando {num_segments} cenas exclusivas de ~10s cada")
+        print(f"⏱️ Narração pt-BR: {duration:.1f}s | Gerando {num_segments} imagens de IA inéditas (~{sub_duration:.1f}s cada)")
 
         prompts_cenas = bloco.get("prompts_ia_10s", [])
         sub_videos_list = []
 
         for j in range(num_segments):
-            prompt_ia = prompts_cenas[j % len(prompts_cenas)] if prompts_cenas else "cinematic documentary scene, photojournalism"
+            prompt_ia = prompts_cenas[j % len(prompts_cenas)] if prompts_cenas else "cinematic documentary scene photojournalism"
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
             imagem_salva = False
 
-            # 1. Tenta gerar a cena fotográfica via Google Imagen 3
-            if gemini_key:
-                imagem_salva = gerar_imagem_google_imagen(prompt_ia, gemini_key, img_path)
+            # 1. TENTATIVA 1: Google Imagen 3 (IA Principal)
+            print(f"   🎨 Scene {scene_counter + 1}/{num_segments * len(roteiro)} | Gerando via Google Imagen 3...")
+            imagem_salva = gerar_imagem_google_imagen(prompt_ia, gemini_key, img_path)
 
-            # 2. Backup via Pexels se o Imagen falhar (com termos reais)
-            if not imagem_salva and pexels_key:
-                print(f"   📸 [Backup Pexels] Buscando foto documental...")
-                img_url = buscar_pexels_photo("press conference diplomacy skyline", pexels_key)
-                if img_url:
-                    try:
-                        res = requests.get(img_url, timeout=8)
-                        imagem_salva = salvar_imagem_sem_distorcao(res.content, img_path)
-                    except Exception:
-                        pass
+            # 2. TENTATIVA 2: Pollinations FLUX (IA Secundária - Ativada se o Google bloquear)
+            if not imagem_salva:
+                print(f"   ✨ Scene {scene_counter + 1}/{num_segments * len(roteiro)} | Recorrendo à IA Secundária (FLUX)...")
+                imagem_salva = gerar_imagem_ia_pollinations(prompt_ia, img_path)
 
-            # 3. Fallback visual seguro caso precise
+            # 3. TENTATIVA 3: Backup Dinâmico via Pexels (com termos específicos da cena)
+            if not imagem_salva:
+                print(f"   📸 Scene {scene_counter + 1}/{num_segments * len(roteiro)} | Recorrendo a foto documental dinâmica...")
+                imagem_salva = buscar_pexels_photo_dinamico(prompt_ia, pexels_key, img_path)
+
+            # 4. Fallback Extremo
             if not imagem_salva:
                 img = Image.new('RGB', (1920, 1080), color=(15, 23, 42))
                 img.save(img_path, 'JPEG', quality=95)
@@ -304,3 +326,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+                        
