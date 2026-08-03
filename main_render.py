@@ -35,7 +35,7 @@ def salvar_imagem_sem_distorcao(binary_content, target_path):
         return False
 
 def buscar_wikimedia_commons(termo):
-    """Busca fotos reais no Wikimedia Commons (Livre de bloqueios em Datacenters)"""
+    """Busca fotos reais no Wikimedia Commons (Imune a bloqueios)"""
     try:
         url = "https://commons.wikimedia.org/w/api.php"
         params = {
@@ -62,7 +62,7 @@ def buscar_wikimedia_commons(termo):
     return None
 
 def buscar_imagem_ddg(termo, tema_principal):
-    """Busca imagens no DuckDuckGo com Fallback"""
+    """Busca imagens no DuckDuckGo"""
     query_composta = f"{tema_principal} {termo} foto noticia"
     try:
         results = DDGS().images(keywords=query_composta, max_results=3)
@@ -76,9 +76,9 @@ def buscar_imagem_ddg(termo, tema_principal):
     return None
 
 def baixar_clip_youtube(termo_busca, output_path):
-    """Tenta baixar 5 segundos de vídeo do YouTube com bypass de robô"""
+    """Tenta baixar 5 segundos de vídeo real do YouTube"""
     try:
-        print(f"   🎬 Tentando baixar vídeo do YouTube: '{termo_busca}'...")
+        print(f"   🎬 [TURNO DE VÍDEO] Baixando clipe do YouTube: '{termo_busca}'...")
         cmd = [
             "yt-dlp",
             f"ytsearch1:{termo_busca} noticias",
@@ -90,11 +90,11 @@ def baixar_clip_youtube(termo_busca, output_path):
             "--quiet",
             "--no-warnings"
         ]
-        subprocess.run(cmd, check=True, timeout=20)
+        subprocess.run(cmd, check=True, timeout=22)
         if os.path.exists(output_path) and os.path.getsize(output_path) > 100000:
             return True
     except Exception as e:
-        print(f"   ⚠️ YouTube ignorado para '{termo_busca}': {e}")
+        print(f"   ⚠️ YouTube indisponível para '{termo_busca}': {e}")
     return False
 
 def extrair_foto_capa_noticia(url):
@@ -135,7 +135,7 @@ async def main():
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
     # 3. Geração do Roteiro e Termos de Busca
-    print("🤖 Analisando a notícia e definindo termos de busca...")
+    print("🤖 Analisando a notícia e definindo cenas...")
     client = OpenAI(api_key=openai_key)
     
     prompt = f"""
@@ -181,10 +181,13 @@ async def main():
     roteiro = dados["roteiro"]
     print(f"🎯 Tema Central: [{tema_principal}]")
 
-    # 4. Processamento dos Blocos com Multi-Motor de Busca
+    # 4. Processamento dos Blocos com Alternância Rigorosa (IMAGEM -> VÍDEO -> IMAGEM -> VÍDEO)
     os.makedirs("output", exist_ok=True)
     concat_block_list = []
-    pool_mids = [] # Guardará links de imagens bem-sucedidas para garantir variedade no fallback
+    pool_mids = []
+    
+    # Contador Global de Cenas para intercalar perfeitamente no vídeo todo
+    global_scene_counter = 0 
 
     for idx, bloco in enumerate(roteiro):
         print(f"\n🎬 Processando Bloco {idx + 1}/{len(roteiro)}...")
@@ -216,33 +219,34 @@ async def main():
             raw_video_path = os.path.abspath(f"output/raw_yt_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
+            # Verifica o turno: Par = IMAGEM | Ímpar = VÍDEO
+            eh_turno_de_video = (global_scene_counter % 2 == 1)
+            global_scene_counter += 1
+
             usou_video = False
 
-            # Tenta YouTube em 1 a cada 3 segmentos
-            if j % 3 == 1:
+            if eh_turno_de_video:
                 usou_video = baixar_clip_youtube(f"{tema_principal} {termo}", raw_video_path)
+                if usou_video:
+                    cmd_ffmpeg_vid = [
+                        "ffmpeg", "-y",
+                        "-i", raw_video_path,
+                        "-t", str(sub_duration),
+                        "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,fps=25",
+                        "-an",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        sub_video_path
+                    ]
+                    try:
+                        subprocess.run(cmd_ffmpeg_vid, check=True)
+                    except Exception:
+                        usou_video = False
 
-            if usou_video:
-                print(f"   📹 Renderizando clipe de VÍDEO para: '{termo}'")
-                cmd_ffmpeg_vid = [
-                    "ffmpeg", "-y",
-                    "-i", raw_video_path,
-                    "-t", str(sub_duration),
-                    "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,fps=25",
-                    "-an",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                    sub_video_path
-                ]
-                try:
-                    subprocess.run(cmd_ffmpeg_vid, check=True)
-                except Exception:
-                    usou_video = False
-
-            # Se não usou vídeo, busca IMAGEM em múltiplos motores
+            # Se for turno de IMAGEM (ou se o vídeo falhou), baixa e renderiza foto com Zoom
             if not usou_video:
                 imagem_salva = False
 
-                # 1. Foto de capa oficial na 1ª cena
+                # 1. Foto de capa na 1ª cena
                 if idx == 0 and j == 0 and foto_capa_original:
                     try:
                         res = requests.get(foto_capa_original, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
@@ -252,7 +256,7 @@ async def main():
 
                 # 2. Busca no DuckDuckGo
                 if not imagem_salva:
-                    print(f"   📸 Buscando foto (DuckDuckGo): '{termo}'")
+                    print(f"   📸 [TURNO DE IMAGEM] Buscando foto (DuckDuckGo): '{termo}'")
                     media_url = buscar_imagem_ddg(termo, tema_principal)
                     if media_url:
                         try:
@@ -263,9 +267,9 @@ async def main():
                         except Exception:
                             imagem_salva = False
 
-                # 3. Busca no Wikimedia Commons (Caso DDG falhe)
+                # 3. Busca no Wikimedia Commons
                 if not imagem_salva:
-                    print(f"   🏛️ Buscando foto (Wikimedia Commons): '{termo}'")
+                    print(f"   🏛️ [TURNO DE IMAGEM] Buscando foto (Wikimedia): '{termo}'")
                     media_url = buscar_wikimedia_commons(f"{termo}")
                     if media_url:
                         try:
@@ -276,20 +280,19 @@ async def main():
                         except Exception:
                             imagem_salva = False
 
-                # 4. Fallback Rotativo do Pool (Garante que NÃO repete sempre a foto do Trump)
+                # 4. Fallback Rotativo do Pool
                 if not imagem_salva:
-                    print("   ⚠️ Usando imagem do pool de variação da notícia.")
+                    print("   ⚠️ Usando imagem do pool de variação.")
                     if pool_mids:
                         img_backup = pool_mids[(idx + j) % len(pool_mids)]
                         salvar_imagem_sem_distorcao(img_backup, img_path)
                     else:
-                        # Fallback geral Unsplash Notícias
                         res = requests.get("https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200", timeout=10)
                         salvar_imagem_sem_distorcao(res.content, img_path)
 
                 # Renderiza Foto com Efeito Zoom In/Out
                 frames = int(sub_duration * 25)
-                if (idx + j) % 2 == 0:
+                if (global_scene_counter) % 2 == 0:
                     zoom_filter = f"scale=2560:1440,zoompan=z='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
                 else:
                     zoom_filter = f"scale=2560:1440,zoompan=z='max(1.25-zoom*0.0015,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
@@ -366,4 +369,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
