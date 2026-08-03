@@ -13,7 +13,7 @@ from pyrogram import Client
 import trafilatura
 
 def get_media_duration(file_path):
-    """Retorna a duração exata de um áudio ou vídeo em segundos"""
+    """Retorna a duração exata do áudio em segundos"""
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
@@ -24,24 +24,24 @@ def get_media_duration(file_path):
     return float(result.stdout.strip())
 
 def salvar_imagem_sem_distorcao(binary_content, target_path):
-    """Corta e ajusta a imagem em 16:9 (1920x1080) SEM ESTICAR ou deformar"""
+    """Ajusta a foto no enquadramento 16:9 (1920x1080) SEM esticar o rosto da pessoa"""
     try:
         img = Image.open(BytesIO(binary_content)).convert('RGB')
         img_fitted = ImageOps.fit(img, (1920, 1080), Image.Resampling.LANCZOS)
         img_fitted.save(target_path, 'JPEG', quality=95)
         return True
     except Exception as e:
-        print(f"⚠️ Imagem descartada: {e}")
+        print(f"⚠️ Imagem inválida descartada: {e}")
         return False
 
-def buscar_wikimedia_commons(termo):
-    """Busca fotos reais no Wikimedia Commons (Imune a bloqueios)"""
+def buscar_wikimedia_commons(nome_pessoa):
+    """Busca fotos oficiais de figuras públicas no Wikimedia Commons (API pública imune a bloqueios)"""
     try:
         url = "https://commons.wikimedia.org/w/api.php"
         params = {
             "action": "query",
             "generator": "search",
-            "gsrsearch": f"{termo}",
+            "gsrsearch": f"{nome_pessoa}",
             "gsrlimit": "5",
             "prop": "imageinfo",
             "iiprop": "url",
@@ -49,23 +49,21 @@ def buscar_wikimedia_commons(termo):
         }
         headers = {'User-Agent': 'BotNoticias/1.0 (https://github.com)'}
         res = requests.get(url, params=params, headers=headers, timeout=6)
-        data = res.json()
-        pages = data.get("query", {}).get("pages", {})
+        pages = res.json().get("query", {}).get("pages", {})
         for page_id, page_info in pages.items():
             imageinfo = page_info.get("imageinfo", [])
             if imageinfo:
                 img_url = imageinfo[0].get("url")
                 if img_url and any(img_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
                     return img_url
-    except Exception as e:
-        print(f"⚠️ Wikimedia search error: {e}")
+    except Exception:
+        pass
     return None
 
-def buscar_imagem_ddg(termo, tema_principal):
-    """Busca imagens no DuckDuckGo"""
-    query_composta = f"{tema_principal} {termo} foto noticia"
+def buscar_imagem_ddg(nome_pessoa):
+    """Busca fotos jornalísticas de figuras públicas no DuckDuckGo"""
     try:
-        results = DDGS().images(keywords=query_composta, max_results=3)
+        results = DDGS().images(keywords=f"{nome_pessoa} foto noticia", max_results=3)
         if results:
             for item in results:
                 img_url = item.get("image")
@@ -75,32 +73,10 @@ def buscar_imagem_ddg(termo, tema_principal):
         pass
     return None
 
-def baixar_clip_youtube(termo_busca, output_path):
-    """Tenta baixar 5 segundos de vídeo real do YouTube"""
-    try:
-        print(f"   🎬 [TURNO DE VÍDEO] Baixando clipe do YouTube: '{termo_busca}'...")
-        cmd = [
-            "yt-dlp",
-            f"ytsearch1:{termo_busca} noticias",
-            "--download-sections", "*0-5",
-            "-f", "bestvideo[ext=mp4][height<=1080]/best[ext=mp4]/best",
-            "-o", output_path,
-            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "--no-playlist",
-            "--quiet",
-            "--no-warnings"
-        ]
-        subprocess.run(cmd, check=True, timeout=22)
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 100000:
-            return True
-    except Exception as e:
-        print(f"   ⚠️ YouTube indisponível para '{termo_busca}': {e}")
-    return False
-
 def extrair_foto_capa_noticia(url):
-    """Extrai a foto de capa original do site da notícia"""
+    """Extrai a foto de capa original do artigo da notícia"""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         resp = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
         og_image = soup.find("meta", property="og:image")
@@ -125,7 +101,7 @@ async def main():
     print(f"📥 Extraindo texto da notícia: {news_url}")
     foto_capa_original = extrair_foto_capa_noticia(news_url)
 
-    # 2. Extração do Conteúdo
+    # 2. Extração da Notícia
     downloaded = trafilatura.fetch_url(news_url)
     if not downloaded:
         raise Exception("Não foi possível acessar a URL informada.")
@@ -134,31 +110,26 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Geração do Roteiro e Termos de Busca
-    print("🤖 Analisando a notícia e definindo cenas...")
+    # 3. Análise da OpenAI focada estritamente em Figuras Públicas
+    print("🤖 Identificando Figuras Públicas e Autoridades no texto...")
     client = OpenAI(api_key=openai_key)
     
     prompt = f"""
-    Você é um diretor de edição de documentários de notícias.
-    1. Identifique o TEMA CENTRAL e PERSONAGENS PRINCIPAIS da matéria.
-    2. Crie um roteiro de 1.100 a 1.300 palavras (para um vídeo de 8 minutos) em 8 blocos narrativos.
-    3. Para cada bloco, crie 6 termos de busca variados em português/inglês referentes a locais, pessoas ou conceitos reais (ex: "Gaza", "White House press conference", "Donald Trump speech", "United Nations flag", "Middle East map").
+    Você é um editor de imagem de telejornalismo.
+    1. Identifique TODOS OS NOMES DE FIGURAS PÚBLICAS, POLÍTICOS, AUTORIDADES E LOCAIS REAIS mencionados na notícia.
+    2. Crie um roteiro de 1.100 a 1.300 palavras em 8 blocos narrativos.
+    3. Para cada bloco, forneça uma lista com os NOMES DAS PESSOAS OU LOCAIS REAIS citados no trecho.
 
-    Retorne ESTRITAMENTE um JSON no seguinte formato:
+    REGRA DE OURO: NUNCA sugira objetos, desenhos, animais ou termos abstratos. Apontar SOMENTE nomes de pessoas reais ou cargos públicos.
+
+    Retorne ESTRITAMENTE um JSON no formato:
     {{
-      "tema_principal": "Tema central curto",
+      "figuras_publicas_mencionadas": ["Nome 1", "Nome 2", "Nome 3"],
       "roteiro": [
         {{
           "bloco": 1,
-          "narracao": "Texto longo narrado...",
-          "termos_busca": [
-            "termo 1",
-            "termo 2",
-            "termo 3",
-            "termo 4",
-            "termo 5",
-            "termo 6"
-          ]
+          "narracao": "Texto narrado...",
+          "pessoas_citadas": ["Nome da Pessoa 1", "Nome da Pessoa 2"]
         }}
       ]
     }}
@@ -170,24 +141,31 @@ async def main():
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um gerador de roteiros focado em diversidade visual concreta."},
+            {"role": "system", "content": "Você é um gerador de roteiros focado estritamente em nomes de figuras públicas reais."},
             {"role": "user", "content": prompt}
         ],
         response_format={"type": "json_object"}
     )
     
     dados = json.loads(response.choices[0].message.content)
-    tema_principal = dados.get("tema_principal", "Notícias")
+    figuras_gerais = dados.get("figuras_publicas_mencionadas", ["Noticia Brasil"])
     roteiro = dados["roteiro"]
-    print(f"🎯 Tema Central: [{tema_principal}]")
+    print(f"👤 Figuras Públicas Identificadas: {figuras_gerais}")
 
-    # 4. Processamento dos Blocos com Alternância Rigorosa (IMAGEM -> VÍDEO -> IMAGEM -> VÍDEO)
+    # 4. Renderização das Imagens (Troca a cada 7s + Edição de Zoom em 100% das fotos)
     os.makedirs("output", exist_ok=True)
     concat_block_list = []
-    pool_mids = []
-    
-    # Contador Global de Cenas para intercalar perfeitamente no vídeo todo
-    global_scene_counter = 0 
+    pool_fotos_reais = []  # Backup contendo apenas fotos reais de figuras públicas do artigo
+    global_scene_counter = 0
+
+    # Baixa e valida a foto de capa original como primeiro item do pool
+    if foto_capa_original:
+        try:
+            res_capa = requests.get(foto_capa_original, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
+            if res_capa.status_code == 200:
+                pool_fotos_reais.append(res_capa.content)
+        except Exception:
+            pass
 
     for idx, bloco in enumerate(roteiro):
         print(f"\n🎬 Processando Bloco {idx + 1}/{len(roteiro)}...")
@@ -204,112 +182,89 @@ async def main():
         ]
         subprocess.run(cmd_tts, check=True)
 
-        # B. Duração e cálculo de segmentos (~6 segundos cada)
+        # B. Duração e cálculo de troca exata a cada ~7 segundos
         duration = get_media_duration(audio_path)
-        num_segments = max(1, math.ceil(duration / 6.0))
+        num_segments = max(1, math.ceil(duration / 7.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Duração: {duration:.1f}s | Montando {num_segments} cenas")
+        print(f"⏱️ Duração: {duration:.1f}s | Montando {num_segments} fotos (~{sub_duration:.1f}s por foto)")
 
-        termos = bloco.get("termos_busca", [tema_principal])
+        pessoas_bloco = bloco.get("pessoas_citadas", figuras_gerais)
         sub_videos_list = []
 
         for j in range(num_segments):
-            termo = termos[j % len(termos)]
+            nome_pessoa = pessoas_bloco[j % len(pessoas_bloco)]
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
-            raw_video_path = os.path.abspath(f"output/raw_yt_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
-            # Verifica o turno: Par = IMAGEM | Ímpar = VÍDEO
-            eh_turno_de_video = (global_scene_counter % 2 == 1)
-            global_scene_counter += 1
+            imagem_salva = False
 
-            usou_video = False
+            # Primeira cena do vídeo usa a foto de capa oficial da notícia
+            if idx == 0 and j == 0 and pool_fotos_reais:
+                imagem_salva = salvar_imagem_sem_distorcao(pool_fotos_reais[0], img_path)
 
-            if eh_turno_de_video:
-                usou_video = baixar_clip_youtube(f"{tema_principal} {termo}", raw_video_path)
-                if usou_video:
-                    cmd_ffmpeg_vid = [
-                        "ffmpeg", "-y",
-                        "-i", raw_video_path,
-                        "-t", str(sub_duration),
-                        "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,fps=25",
-                        "-an",
-                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                        sub_video_path
-                    ]
+            # 1. Busca foto real no Wikimedia Commons
+            if not imagem_salva:
+                print(f"   📸 Buscando figura pública (Wikimedia): '{nome_pessoa}'")
+                img_url = buscar_wikimedia_commons(nome_pessoa)
+                if img_url:
                     try:
-                        subprocess.run(cmd_ffmpeg_vid, check=True)
-                    except Exception:
-                        usou_video = False
-
-            # Se for turno de IMAGEM (ou se o vídeo falhou), baixa e renderiza foto com Zoom
-            if not usou_video:
-                imagem_salva = False
-
-                # 1. Foto de capa na 1ª cena
-                if idx == 0 and j == 0 and foto_capa_original:
-                    try:
-                        res = requests.get(foto_capa_original, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
+                        res = requests.get(img_url, timeout=8)
                         imagem_salva = salvar_imagem_sem_distorcao(res.content, img_path)
+                        if imagem_salva and res.content not in pool_fotos_reais:
+                            pool_fotos_reais.append(res.content)
                     except Exception:
                         imagem_salva = False
 
-                # 2. Busca no DuckDuckGo
-                if not imagem_salva:
-                    print(f"   📸 [TURNO DE IMAGEM] Buscando foto (DuckDuckGo): '{termo}'")
-                    media_url = buscar_imagem_ddg(termo, tema_principal)
-                    if media_url:
-                        try:
-                            res = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
-                            imagem_salva = salvar_imagem_sem_distorcao(res.content, img_path)
-                            if imagem_salva:
-                                pool_mids.append(res.content)
-                        except Exception:
-                            imagem_salva = False
+            # 2. Busca foto real no DuckDuckGo
+            if not imagem_salva:
+                print(f"   🔎 Buscando figura pública (DuckDuckGo): '{nome_pessoa}'")
+                img_url = buscar_imagem_ddg(nome_pessoa)
+                if img_url:
+                    try:
+                        res = requests.get(img_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
+                        imagem_salva = salvar_imagem_sem_distorcao(res.content, img_path)
+                        if imagem_salva and res.content not in pool_fotos_reais:
+                            pool_fotos_reais.append(res.content)
+                    except Exception:
+                        imagem_salva = False
 
-                # 3. Busca no Wikimedia Commons
-                if not imagem_salva:
-                    print(f"   🏛️ [TURNO DE IMAGEM] Buscando foto (Wikimedia): '{termo}'")
-                    media_url = buscar_wikimedia_commons(f"{termo}")
-                    if media_url:
-                        try:
-                            res = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
-                            imagem_salva = salvar_imagem_sem_distorcao(res.content, img_path)
-                            if imagem_salva:
-                                pool_mids.append(res.content)
-                        except Exception:
-                            imagem_salva = False
-
-                # 4. Fallback Rotativo do Pool
-                if not imagem_salva:
-                    print("   ⚠️ Usando imagem do pool de variação.")
-                    if pool_mids:
-                        img_backup = pool_mids[(idx + j) % len(pool_mids)]
-                        salvar_imagem_sem_distorcao(img_backup, img_path)
-                    else:
-                        res = requests.get("https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200", timeout=10)
+            # 3. Fallback estritamente de Pessoas Reais (NUNCA usa imagem genérica)
+            if not imagem_salva:
+                print(f"   ⚠️ Usando foto de outra figura pública da notícia como backup.")
+                if pool_fotos_reais:
+                    foto_backup = pool_fotos_reais[global_scene_counter % len(pool_fotos_reais)]
+                    salvar_imagem_sem_distorcao(foto_backup, img_path)
+                else:
+                    # Tenta última busca genérica pelas figuras principais da matéria
+                    figura_backup = figuras_gerais[0]
+                    img_url = buscar_wikimedia_commons(figura_backup) or buscar_imagem_ddg(figura_backup)
+                    if img_url:
+                        res = requests.get(img_url, timeout=8)
                         salvar_imagem_sem_distorcao(res.content, img_path)
 
-                # Renderiza Foto com Efeito Zoom In/Out
-                frames = int(sub_duration * 25)
-                if (global_scene_counter) % 2 == 0:
-                    zoom_filter = f"scale=2560:1440,zoompan=z='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
-                else:
-                    zoom_filter = f"scale=2560:1440,zoompan=z='max(1.25-zoom*0.0015,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
+            # C. EDIÇÃO OBRIGATÓRIA EM TODAS AS FOTOS: Efeito Zoom In e Zoom Out
+            global_scene_counter += 1
+            frames = int(sub_duration * 25)
+            
+            if global_scene_counter % 2 == 0:
+                # Efeito Zoom In
+                zoom_filter = f"scale=2560:1440,zoompan=z='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
+            else:
+                # Efeito Zoom Out
+                zoom_filter = f"scale=2560:1440,zoompan=z='max(1.25-zoom*0.0015,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
 
-                cmd_sub_ffmpeg = [
-                    "ffmpeg", "-y",
-                    "-loop", "1", "-i", img_path,
-                    "-t", str(sub_duration),
-                    "-vf", zoom_filter,
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                    sub_video_path
-                ]
-                subprocess.run(cmd_sub_ffmpeg, check=True)
-
+            cmd_sub_ffmpeg = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-i", img_path,
+                "-t", str(sub_duration),
+                "-vf", zoom_filter,
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                sub_video_path
+            ]
+            subprocess.run(cmd_sub_ffmpeg, check=True)
             sub_videos_list.append(f"file '{sub_video_path}'")
 
-        # C. Unir sub-cenas do bloco e juntar com áudio
+        # D. Unir sub-cenas do bloco e sincronizar com o áudio
         sub_txt_path = os.path.abspath(f"output/sub_files_{idx}.txt")
         with open(sub_txt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(sub_videos_list))
@@ -369,3 +324,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
