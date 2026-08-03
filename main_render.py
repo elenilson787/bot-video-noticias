@@ -15,7 +15,9 @@ from pyrogram import Client
 import trafilatura
 
 # ==============================================================================
-# CONFIGURAÇÃO: False para gerar as imagens reais de Anime 90s por IA
+# CONFIGURAÇÃO
+# False -> Gera imagens hiper-realistas por IA (Google Imagen 3 / FLUX)
+# True  -> Modo de teste super rápido com slides locais
 MODO_TESTE = False
 # ==============================================================================
 
@@ -51,7 +53,7 @@ def criar_imagem_placeholder_teste(numero_cena, texto_trecho, target_path):
         draw = ImageDraw.Draw(img)
         
         draw.rectangle([80, 80, 1840, 1000], outline=(51, 65, 85), width=4)
-        draw.text((120, 120), f"MODO TESTE ANIME - CENA #{numero_cena}", fill=(226, 232, 240))
+        draw.text((120, 120), f"MODO TESTE REALISTA - CENA #{numero_cena}", fill=(226, 232, 240))
         draw.text((120, 200), f"Prompt: {texto_trecho[:80]}...", fill=(148, 163, 184))
         
         img.save(target_path, 'JPEG', quality=95)
@@ -60,30 +62,25 @@ def criar_imagem_placeholder_teste(numero_cena, texto_trecho, target_path):
         print(f"⚠️ Erro ao criar placeholder local: {e}")
         return False
 
-def gerar_imagem_google_imagen_anime(prompt_ingles, gemini_key, target_path):
-    """Gera imagem no estilo Anime Anos 90 via API oficial do Google AI Studio (:predict)"""
+def gerar_imagem_google_imagen_realista(prompt_ingles, gemini_key, target_path):
+    """Gera imagem no estilo fotojornalismo hiper-realista via Google Imagen 3"""
     if not gemini_key:
         return False
         
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key={gemini_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:generateImages?key={gemini_key}"
     headers = {"Content-Type": "application/json"}
     
     prompt_enriquecido = (
-        f"1990s retro anime art style, hand-drawn cel animation, Rumiko Takahashi aesthetics, "
-        f"Inuyasha anime visual style, dramatic atmospheric lighting, detailed background, {prompt_ingles}. "
-        f"NO text, NO written words, NO letters, NO logos, NO realistic 3D render, NO modern CGI."
+        f"Award-winning documentary photojournalism, realistic news photograph, 8k resolution, cinematic lighting, {prompt_ingles}. "
+        f"NO text, NO written words, NO letters, NO logos, NO 3D renders, NO cartoon, NO illustration."
     )
     
     payload = {
-        "instances": [
-            {"prompt": prompt_enriquecido}
-        ],
-        "parameters": {
-            "sampleCount": 1,
+        "prompt": prompt_enriquecido,
+        "config": {
+            "numberOfImages": 1,
             "aspectRatio": "16:9",
-            "outputOptions": {
-                "mimeType": "image/jpeg"
-            }
+            "outputMimeType": "image/jpeg"
         }
     }
     
@@ -91,36 +88,59 @@ def gerar_imagem_google_imagen_anime(prompt_ingles, gemini_key, target_path):
         res = requests.post(url, headers=headers, json=payload, timeout=25)
         if res.status_code == 200:
             data = res.json()
-            predictions = data.get("predictions", [])
-            if predictions:
-                base64_str = predictions[0].get("bytesBase64Encoded") or predictions[0].get("image", {}).get("imageBytes")
+            generated_images = data.get("generatedImages", [])
+            if generated_images:
+                base64_str = generated_images[0].get("image", {}).get("imageBytes")
                 if base64_str:
                     img_bytes = base64.b64decode(base64_str)
                     print("   ✅ Sucesso via Google Imagen 3!")
                     return salvar_imagem_sem_distorcao(img_bytes, target_path)
         else:
-            print(f"   ⚠️ Resposta Google Imagen: {res.status_code} - {res.text[:100]}")
+            print(f"   ⚠️ Resposta Google Imagen: {res.status_code} - {res.text[:80]}")
     except Exception as e:
-        print(f"   ⚠️ Erro de conexão com Google Imagen: {e}")
+        print(f"   ⚠️ Erro de conexão Google Imagen: {e}")
     return False
 
-def gerar_imagem_pollinations_flux_anime(prompt_ingles, target_path):
-    """Gera imagem no estilo Anime Anos 90 via Pollinations FLUX com proteção anti-429"""
+def gerar_imagem_huggingface_realista(prompt_ingles, hf_token, target_path):
+    """Gera imagem realista via Hugging Face API (FLUX.1-schnell)"""
+    if not hf_token:
+        return False
+        
+    url = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    
     prompt_enriquecido = (
-        f"1990s retro anime style, Inuyasha anime visual aesthetics, hand-drawn cel animation, "
-        f"dramatic lighting, hand painted background, {prompt_ingles}"
+        f"Award-winning documentary photojournalism, realistic news picture, 8k resolution, cinematic lighting, {prompt_ingles}"
+    )
+    payload = {"inputs": prompt_enriquecido}
+    
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=25)
+        if res.status_code == 200 and len(res.content) > 5000:
+            print("   ✅ Sucesso via Hugging Face FLUX.1!")
+            return salvar_imagem_sem_distorcao(res.content, target_path)
+        elif res.status_code == 503:
+            print("   ⏳ Modelo HF aquecendo na nuvem... aguardando 5s...")
+            time.sleep(5)
+    except Exception as e:
+        print(f"   ⚠️ Erro Hugging Face: {e}")
+    return False
+
+def gerar_imagem_pollinations_flux_realista(prompt_ingles, target_path):
+    """Gera imagem realista via Pollinations FLUX"""
+    prompt_enriquecido = (
+        f"Documentary photojournalism, realistic news picture, 8k resolution, cinematic lighting, {prompt_ingles}"
     )
     prompt_encoded = urllib.parse.quote(prompt_enriquecido)
     
     session = requests.Session()
     session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     })
 
     for tentativa in range(3):
         try:
-            # Pausa progressiva para respeitar a taxa de requisições
-            time.sleep(2 * (tentativa + 1))
+            time.sleep(3 * (tentativa + 1))  # Pausa preventiva anti-429
             seed = random.randint(100000, 999999)
             url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
             
@@ -129,35 +149,38 @@ def gerar_imagem_pollinations_flux_anime(prompt_ingles, target_path):
                 print("   ✅ Sucesso via Pollinations FLUX!")
                 return salvar_imagem_sem_distorcao(res.content, target_path)
             elif res.status_code == 429:
-                wait_time = 6 * (tentativa + 1)
-                print(f"   ⏳ Rate limit (429) no Pollinations. Aguardando {wait_time}s para tentar novamente...")
-                time.sleep(wait_time)
-            else:
-                print(f"   ⚠️ Tentativa {tentativa+1} FLUX retornou status: {res.status_code}")
+                print(f"   ⏳ Rate limit (429). Aguardando {5 * (tentativa + 1)}s...")
+                time.sleep(5 * (tentativa + 1))
         except Exception as e:
             print(f"   ⚠️ Tentativa {tentativa+1} FLUX falhou: {e}")
             time.sleep(3)
             
     return False
 
-def gerar_imagem_ia_garantida(prompt_ingles, gemini_key, scene_num, target_path):
-    """Gerenciador de imagens estilo Anime"""
+def gerar_imagem_ia_garantida(prompt_ingles, gemini_key, hf_token, scene_num, target_path):
+    """Gerenciador triplo de mídias de IA estilo Realista"""
     if MODO_TESTE:
         return criar_imagem_placeholder_teste(scene_num, prompt_ingles, target_path)
 
-    # 1. Tenta Google Imagen 3 (:predict)
+    # 1. Tenta Google Imagen 3
     if gemini_key:
-        print(f"   🎨 Gerando cena Anime via Google Imagen 3...")
-        if gerar_imagem_google_imagen_anime(prompt_ingles, gemini_key, target_path):
+        print(f"   🎨 Gerando cena Realista via Google Imagen 3...")
+        if gerar_imagem_google_imagen_realista(prompt_ingles, gemini_key, target_path):
             return True
 
-    # 2. Tenta Pollinations FLUX (com backoff anti-429)
-    print(f"   ✨ Gerando cena Anime via Pollinations FLUX...")
-    if gerar_imagem_pollinations_flux_anime(prompt_ingles, target_path):
+    # 2. Tenta Hugging Face FLUX.1
+    if hf_token:
+        print(f"   🤗 Gerando cena Realista via Hugging Face...")
+        if gerar_imagem_huggingface_realista(prompt_ingles, hf_token, target_path):
+            return True
+
+    # 3. Tenta Pollinations FLUX
+    print(f"   ✨ Gerando cena Realista via Pollinations FLUX...")
+    if gerar_imagem_pollinations_flux_realista(prompt_ingles, target_path):
         return True
 
-    # 3. Fallback de segurança local se a rede esgotar
-    print(f"   🛡️ Gerando slide de segurança...")
+    # 4. Fallback de segurança local se todas as conexões esgotarem
+    print(f"   🛡️ Gerando slide de segurança local...")
     return criar_imagem_placeholder_teste(scene_num, prompt_ingles, target_path)
 
 async def main():
@@ -166,6 +189,7 @@ async def main():
     chat_id = os.getenv("CHAT_ID")
     openai_key = os.getenv("OPENAI_API_KEY")
     gemini_key = os.getenv("GEMINI_API_KEY")
+    hf_token = os.getenv("HF_TOKEN")
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     telegram_api_id = os.getenv("TELEGRAM_API_ID")
     telegram_api_hash = os.getenv("TELEGRAM_API_HASH")
@@ -185,23 +209,24 @@ async def main():
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
     # 3. Análise da OpenAI
-    print("🤖 Gerando roteiro pt-BR e prompts de imagem no estilo Anime 90s...")
+    print("🤖 Gerando roteiro pt-BR e prompts de imagem no estilo Fotojornalismo Realista...")
     client = OpenAI(api_key=openai_key)
     
     prompt_roteiro = f"""
-    Você é um diretor de arte de animação estilo Anime dos Anos 90 (tipo Inuyasha) e roteirista.
+    Você é um diretor de arte e roteirista de telejornalismo investigativo.
     
     SUA MISSÃO:
     1. Crie um roteiro narrado ESTRITAMENTE em PORTUGUÊS DO BRASIL (pt-BR) em 8 blocos narrativos.
-    2. Para CADA BLOCO, forneça de 6 a 8 PROMPTS VISUAIS EXCLUSIVOS EM INGLÊS no estilo ANIME RETRO DOS ANOS 90.
-    3. Cada prompt visual servirá para gerar UMA IMAGEM ÚNICA DE ANIME a cada 10 SEGUNDOS de narração.
+    2. Para CADA BLOCO, forneça de 6 a 8 PROMPTS VISUAIS EXCLUSIVOS EM INGLÊS no estilo FOTOJORNALISMO REALISTA.
+    3. Cada prompt visual servirá para gerar UMA IMAGEM ÚNICA DE IA a cada 10 SEGUNDOS de narração.
 
-    REGRAS PARA OS PROMPTS DO ANIME (EM INGLÊS):
-    - Descreva cenários, vistas panorâmicas, ambientes institucionais ou diplomáticos estilizados como ANIME DOS ANOS 90 (estilo Inuyasha/cel animation).
-    - Se for discursos/política: "1990s anime style, grand conference room with podium, dramatic lighting, anime hand-drawn background"
-    - Se for cidades/geografia: "1990s anime style, aerial view of a coastal city at sunset, hand-painted anime landscape background, dramatic sky"
-    - Se for diplomacia: "1990s anime style, anime figures in suits sitting at a large diplomatic table, dark moody anime palette"
-    - PROIBIDO: NUNCA use palavras de violência explícita ("blood", "war", "explosion", "missile"). NUNCA sugira letras, textos escritos ou 3D realistas.
+    REGRAS PARA OS PROMPTS VISUAIS (EM INGLÊS):
+    - Crie descrições FOTOGRÁFICAS, SEGURAS E DOCUMENTAIS referentes ao que é falado naquele exato trecho.
+    - REGRAS ANTI-BLOQUEIO DE SEGURANÇA: NUNCA use palavras de violência explícita ("attack", "blood", "war", "explosion", "missile"). Substitua por descrições diplomáticas, territoriais ou institucionais:
+      * Em vez de guerra/ataque: "wide aerial photograph of a coastal city skyline at dusk, moody atmospheric lighting, documentary style"
+      * Em vez de política/discursos: "a formal press conference room with podium, microphones, blurred flags in background, soft studio lighting"
+      * Em vez de reuniões: "diplomats in suits sitting around an oval conference table in an international summit, wide shot"
+    - PROIBIDO: NUNCA sugira letras, palavras escritas, placas, cartazes, 3D renders, animações ou ilustrações.
 
     Retorne ESTRITAMENTE um JSON no formato:
     {{
@@ -210,8 +235,8 @@ async def main():
           "bloco": 1,
           "narracao": "Texto narrado exclusivamente em PORTUGUÊS DO BRASIL...",
           "prompts_ia_10s": [
-            "Detailed 1990s anime visual prompt for 0-10s scene",
-            "Detailed 1990s anime visual prompt for 10-20s scene"
+            "Detailed realistic photo prompt for 0-10s scene",
+            "Detailed realistic photo prompt for 10-20s scene"
           ]
         }}
       ]
@@ -224,7 +249,7 @@ async def main():
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um diretor de arte especializado em prompts de imagem no estilo Anime dos Anos 90 (estilo Inuyasha)."},
+            {"role": "system", "content": "Você é um diretor de arte especializado em prompts de imagem fotojornalísticos hiper-realistas."},
             {"role": "user", "content": prompt_roteiro}
         ],
         response_format={"type": "json_object"}
@@ -257,20 +282,20 @@ async def main():
         duration = get_media_duration(audio_path)
         num_segments = max(1, math.ceil(duration / 10.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Narração pt-BR: {duration:.1f}s | Criando {num_segments} cenas Anime (~{sub_duration:.1f}s cada)")
+        print(f"⏱️ Narração pt-BR: {duration:.1f}s | Criando {num_segments} cenas Realistas (~{sub_duration:.1f}s cada)")
 
         prompts_cenas = bloco.get("prompts_ia_10s", [])
         sub_videos_list = []
 
         for j in range(num_segments):
-            prompt_ia = prompts_cenas[j % len(prompts_cenas)] if prompts_cenas else "1990s anime style, dramatic background"
+            prompt_ia = prompts_cenas[j % len(prompts_cenas)] if prompts_cenas else "documentary photojournalism, realistic news photo"
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
             scene_counter += 1
 
-            # Geração da imagem estilo Anime
-            gerar_imagem_ia_garantida(prompt_ia, gemini_key, scene_counter, img_path)
+            # Geração da imagem com triplo motor de IA estilo Realista
+            gerar_imagem_ia_garantida(prompt_ia, gemini_key, hf_token, scene_counter, img_path)
 
             # C. EDIÇÃO DE MOVIMENTO (Zoom In / Zoom Out Alternado)
             frames = int(sub_duration * 25)
@@ -350,3 +375,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
