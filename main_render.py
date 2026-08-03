@@ -61,11 +61,11 @@ def criar_imagem_placeholder_teste(numero_cena, texto_trecho, target_path):
         return False
 
 def gerar_imagem_google_imagen_anime(prompt_ingles, gemini_key, target_path):
-    """Gera imagem no estilo Anime Anos 90 via API oficial do Google AI Studio"""
+    """Gera imagem no estilo Anime Anos 90 via API oficial do Google AI Studio (:predict)"""
     if not gemini_key:
         return False
         
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:generateImages?key={gemini_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key={gemini_key}"
     headers = {"Content-Type": "application/json"}
     
     prompt_enriquecido = (
@@ -75,11 +75,15 @@ def gerar_imagem_google_imagen_anime(prompt_ingles, gemini_key, target_path):
     )
     
     payload = {
-        "prompt": prompt_enriquecido,
-        "config": {
-            "numberOfImages": 1,
-            "outputMimeType": "image/jpeg",
-            "aspectRatio": "16:9"
+        "instances": [
+            {"prompt": prompt_enriquecido}
+        ],
+        "parameters": {
+            "sampleCount": 1,
+            "aspectRatio": "16:9",
+            "outputOptions": {
+                "mimeType": "image/jpeg"
+            }
         }
     }
     
@@ -87,21 +91,21 @@ def gerar_imagem_google_imagen_anime(prompt_ingles, gemini_key, target_path):
         res = requests.post(url, headers=headers, json=payload, timeout=25)
         if res.status_code == 200:
             data = res.json()
-            generated_images = data.get("generatedImages", [])
-            if generated_images:
-                base64_str = generated_images[0].get("image", {}).get("imageBytes")
+            predictions = data.get("predictions", [])
+            if predictions:
+                base64_str = predictions[0].get("bytesBase64Encoded") or predictions[0].get("image", {}).get("imageBytes")
                 if base64_str:
                     img_bytes = base64.b64decode(base64_str)
                     print("   ✅ Sucesso via Google Imagen 3!")
                     return salvar_imagem_sem_distorcao(img_bytes, target_path)
         else:
-            print(f"   ⚠️ Resposta Google Imagen: {res.status_code} - {res.text[:80]}")
+            print(f"   ⚠️ Resposta Google Imagen: {res.status_code} - {res.text[:100]}")
     except Exception as e:
         print(f"   ⚠️ Erro de conexão com Google Imagen: {e}")
     return False
 
 def gerar_imagem_pollinations_flux_anime(prompt_ingles, target_path):
-    """Gera imagem no estilo Anime Anos 90 via Pollinations FLUX com reconexão resiliente"""
+    """Gera imagem no estilo Anime Anos 90 via Pollinations FLUX com proteção anti-429"""
     prompt_enriquecido = (
         f"1990s retro anime style, Inuyasha anime visual aesthetics, hand-drawn cel animation, "
         f"dramatic lighting, hand painted background, {prompt_ingles}"
@@ -110,12 +114,13 @@ def gerar_imagem_pollinations_flux_anime(prompt_ingles, target_path):
     
     session = requests.Session()
     session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     })
 
     for tentativa in range(3):
         try:
+            # Pausa progressiva para respeitar a taxa de requisições
+            time.sleep(2 * (tentativa + 1))
             seed = random.randint(100000, 999999)
             url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
             
@@ -123,11 +128,15 @@ def gerar_imagem_pollinations_flux_anime(prompt_ingles, target_path):
             if res.status_code == 200 and len(res.content) > 10000:
                 print("   ✅ Sucesso via Pollinations FLUX!")
                 return salvar_imagem_sem_distorcao(res.content, target_path)
+            elif res.status_code == 429:
+                wait_time = 6 * (tentativa + 1)
+                print(f"   ⏳ Rate limit (429) no Pollinations. Aguardando {wait_time}s para tentar novamente...")
+                time.sleep(wait_time)
             else:
                 print(f"   ⚠️ Tentativa {tentativa+1} FLUX retornou status: {res.status_code}")
         except Exception as e:
             print(f"   ⚠️ Tentativa {tentativa+1} FLUX falhou: {e}")
-            time.sleep(2)
+            time.sleep(3)
             
     return False
 
@@ -136,13 +145,13 @@ def gerar_imagem_ia_garantida(prompt_ingles, gemini_key, scene_num, target_path)
     if MODO_TESTE:
         return criar_imagem_placeholder_teste(scene_num, prompt_ingles, target_path)
 
-    # 1. Tenta Google Imagen 3
+    # 1. Tenta Google Imagen 3 (:predict)
     if gemini_key:
         print(f"   🎨 Gerando cena Anime via Google Imagen 3...")
         if gerar_imagem_google_imagen_anime(prompt_ingles, gemini_key, target_path):
             return True
 
-    # 2. Tenta Pollinations FLUX
+    # 2. Tenta Pollinations FLUX (com backoff anti-429)
     print(f"   ✨ Gerando cena Anime via Pollinations FLUX...")
     if gerar_imagem_pollinations_flux_anime(prompt_ingles, target_path):
         return True
@@ -341,4 +350,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
