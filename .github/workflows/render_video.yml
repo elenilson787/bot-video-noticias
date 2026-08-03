@@ -33,5 +33,6 @@ jobs:
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           NEWS_URL: ${{ github.event.client_payload.news_url }}
           CHAT_ID: ${{ github.event.client_payload.chat_id }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }
         run: python main_render.py
         
