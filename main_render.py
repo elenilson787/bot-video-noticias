@@ -1,14 +1,13 @@
 import os
 import json
 import math
-import hashlib
+import random
+import urllib.parse
 import asyncio
 import requests
 import subprocess
 from io import BytesIO
 from PIL import Image, ImageOps
-from bs4 import BeautifulSoup
-from duckduckgo_search import DDGS
 from openai import OpenAI
 from pyrogram import Client
 import trafilatura
@@ -24,81 +23,36 @@ def get_media_duration(file_path):
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return float(result.stdout.strip())
 
-def calcular_hash_imagem(binary_content):
-    """Gera um MD5 único dos bytes para evitar fotos idênticas"""
-    return hashlib.md5(binary_content).hexdigest()
-
 def salvar_imagem_sem_distorcao(binary_content, target_path):
-    """Ajusta a foto no enquadramento 16:9 (1920x1080) SEM esticar o rosto"""
+    """Ajusta a imagem gerada em 16:9 (1920x1080) com máxima qualidade"""
     try:
         img = Image.open(BytesIO(binary_content)).convert('RGB')
         img_fitted = ImageOps.fit(img, (1920, 1080), Image.Resampling.LANCZOS)
         img_fitted.save(target_path, 'JPEG', quality=95)
         return True
     except Exception as e:
-        print(f"⚠️ Imagem descartada: {e}")
+        print(f"⚠️ Erro ao formatar imagem: {e}")
         return False
 
-def buscar_imagem_wikipedia(termo):
-    """Busca fotos oficiais diretamente na API da Wikipedia (100% Livre de Bloqueios)"""
-    headers = {'User-Agent': 'BotNoticias/3.0 (https://github.com)'}
-    for lang in ["pt", "en"]:
-        try:
-            url_search = f"https://{lang}.wikipedia.org/w/api.php"
-            params_search = {
-                "action": "query",
-                "list": "search",
-                "srsearch": termo,
-                "utf8": "1",
-                "format": "json"
-            }
-            res_search = requests.get(url_search, params=params_search, headers=headers, timeout=6)
-            search_results = res_search.json().get("query", {}).get("search", [])
-            
-            if search_results:
-                page_title = search_results[0]["title"]
-                params_img = {
-                    "action": "query",
-                    "titles": page_title,
-                    "prop": "pageimages",
-                    "pithumbsize": "1200",
-                    "format": "json"
-                }
-                res_img = requests.get(url_search, params=params_img, headers=headers, timeout=6)
-                pages = res_img.json().get("query", {}).get("pages", {})
-                for p_id, p_info in pages.items():
-                    thumbnail = p_info.get("thumbnail", {}).get("source")
-                    if thumbnail:
-                        return thumbnail
-        except Exception:
-            pass
-    return None
-
-def buscar_imagem_ddg(termo):
-    """Busca fotos jornalísticas e geográficas no DuckDuckGo"""
+def gerar_imagem_ia_pollinations(prompt_ingles, target_path):
+    """Gera uma imagem hiper-realista inédita via IA (FLUX Model / Pollinations - 100% Grátis)"""
     try:
-        results = DDGS().images(keywords=f"{termo} noticia", max_results=3)
-        if results:
-            for item in results:
-                img_url = item.get("image")
-                if img_url and img_url.startswith("http"):
-                    return img_url
-    except Exception:
-        pass
-    return None
-
-def extrair_foto_capa_noticia(url):
-    """Extrai a foto de capa original da matéria"""
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        og_image = soup.find("meta", property="og:image")
-        if og_image and og_image.get("content"):
-            return og_image["content"]
-    except Exception:
-        pass
-    return None
+        # Adiciona termos de qualidade fotográfica e jornalística ao prompt
+        prompt_enriquecido = f"Editorial photojournalism, realistic news photo, cinematic lighting, 8k resolution, {prompt_ingles}"
+        prompt_encoded = urllib.parse.quote(prompt_enriquecido)
+        
+        # Semente aleatória para garantir que mesmo prompts parecidos gerem imagens 100% diferentes
+        seed = random.randint(1, 999999)
+        url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
+        
+        print(f"   🎨 Gerando imagem via IA: '{prompt_ingles[:50]}...'")
+        res = requests.get(url, timeout=25)
+        
+        if res.status_code == 200:
+            return salvar_imagem_sem_distorcao(res.content, target_path)
+    except Exception as e:
+        print(f"   ⚠️ Falha ao gerar imagem via IA: {e}")
+    return False
 
 async def main():
     # 1. Leitura de Variáveis de Ambiente
@@ -113,9 +67,8 @@ async def main():
         raise ValueError("❌ Erro: Variáveis de ambiente obrigatórias não encontradas!")
 
     print(f"📥 Extraindo texto da notícia: {news_url}")
-    foto_capa_original = extrair_foto_capa_noticia(news_url)
 
-    # 2. Extração da Notícia
+    # 2. Extração do Conteúdo da Notícia
     downloaded = trafilatura.fetch_url(news_url)
     if not downloaded:
         raise Exception("Não foi possível acessar a URL informada.")
@@ -124,24 +77,35 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Análise da OpenAI
-    print("🤖 Gerando termos de busca contextuais baseados no texto...")
+    # 3. Análise da OpenAI com Prompts de Geração Visual para IA
+    print("🤖 Analisando a notícia e criando prompts de imagem para a IA...")
     client = OpenAI(api_key=openai_key)
     
-    prompt = f"""
-    Você é um diretor de arte de telejornalismo.
-    1. Crie um roteiro de 1.100 a 1.300 palavras em 8 blocos narrativos.
-    2. Identifique uma lista geral com os 5 a 8 NOMES DE PESSOAS, LOCAIS, MAPAS OU GOVERNOS mais importantes da matéria.
-    3. Para CADA BLOCO, forneça de 5 a 6 termos de busca específicos e variados (em inglês ou português) para acompanhar a narração sem apelar para violência explícita.
+    prompt_roteiro = f"""
+    Você é um diretor de arte e roteirista de telejornalismo.
+    1. Crie um roteiro de 1.900 a 2.300 palavras em 12 blocos narrativos.
+    2. Para CADA BLOCO, crie 6 PROMPTS VISUAIS DETALHADOS EM INGLÊS para serem enviados a uma IA geradora de imagens.
+
+    REGRAS PARA OS PROMPTS DA IA (EM INGLÊS):
+    - Devem descrever a cena fotograficamente correspondendo EXATAMENTE ao assunto que está sendo narrado.
+    - Se a narração for sobre política/diplomacia: "A formal press conference at the White House press room with flags, microphones, wide shot"
+    - Se a narração for sobre conflito/geografia: "Aerial view of Gaza territory landscape with buildings and smoke in distance, news photography"
+    - Se a narração for sobre economia: "Close up of United States dollar bills and financial charts on a desk, dramatic lighting"
 
     Retorne ESTRITAMENTE um JSON no formato:
     {{
-      "figuras_gerais": ["Nome/Local 1", "Nome/Local 2", "Nome/Local 3", "Nome/Local 4"],
       "roteiro": [
         {{
           "bloco": 1,
           "narracao": "Texto narrado para este trecho...",
-          "termos_busca_cenas": ["Termo 1", "Termo 2", "Termo 3", "Termo 4"]
+          "prompts_ia": [
+            "Detailed English image prompt 1",
+            "Detailed English image prompt 2",
+            "Detailed English image prompt 3",
+            "Detailed English image prompt 4",
+            "Detailed English image prompt 5",
+            "Detailed English image prompt 6"
+          ]
         }}
       ]
     }}
@@ -153,47 +117,18 @@ async def main():
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um gerador de roteiros focado em representação visual dinâmica e contextual."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": "Você é um diretor de arte especializado em prompts de imagem realistas em inglês."},
+            {"role": "user", "content": prompt_roteiro}
         ],
         response_format={"type": "json_object"}
     )
     
     dados = json.loads(response.choices[0].message.content)
-    figuras_gerais = dados.get("figuras_gerais") or ["Notícia"]
     roteiro = dados["roteiro"]
 
-    # 4. Inicialização Dinâmica do Banco de Imagens (Apenas Conteúdo Real da Notícia)
+    # 4. Geração Dinâmica de Imagens Inéditas via IA por Cena
     os.makedirs("output", exist_ok=True)
     concat_block_list = []
-    pool_imagens_unicas = {}
-    historico_exibicao = [] 
-
-    print("⚡ Construindo banco de imagens dinâmico a partir dos temas da notícia...")
-    
-    # Adiciona a foto oficial de capa do artigo
-    if foto_capa_original:
-        try:
-            res_capa = requests.get(foto_capa_original, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
-            if res_capa.status_code == 200:
-                h = calcular_hash_imagem(res_capa.content)
-                pool_imagens_unicas[h] = res_capa.content
-        except Exception:
-            pass
-
-    # Pré-busca fotos reais para os temas principais identificados pela IA
-    for entidade in figuras_gerais:
-        url_img = buscar_imagem_wikipedia(entidade) or buscar_imagem_ddg(entidade)
-        if url_img:
-            try:
-                res_ent = requests.get(url_img, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
-                if res_ent.status_code == 200:
-                    h = calcular_hash_imagem(res_ent.content)
-                    if h not in pool_imagens_unicas:
-                        pool_imagens_unicas[h] = res_ent.content
-            except Exception:
-                pass
-
     scene_counter = 0
 
     for idx, bloco in enumerate(roteiro):
@@ -211,66 +146,29 @@ async def main():
         ]
         subprocess.run(cmd_tts, check=True)
 
-        # B. Duração e cálculo de imagens (~7 segundos por imagem)
+        # B. Duração e cálculo de cenas a cada ~7 segundos
         duration = get_media_duration(audio_path)
         num_segments = max(1, math.ceil(duration / 7.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Duração: {duration:.1f}s | Criando {num_segments} cenas (~{sub_duration:.1f}s cada)")
+        print(f"⏱️ Duração: {duration:.1f}s | Gerando {num_segments} imagens inéditas via IA (~{sub_duration:.1f}s por cena)")
 
-        termos_cenas = bloco.get("termos_busca_cenas") or figuras_gerais
+        prompts_cenas = bloco.get("prompts_ia", [])
         sub_videos_list = []
 
         for j in range(num_segments):
-            termo = termos_cenas[j % len(termos_cenas)]
+            prompt_ia = prompts_cenas[j % len(prompts_cenas)] if prompts_cenas else "news photo, international political news"
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
-            imagem_salva = False
-            bytes_imagem_escolhida = None
+            # 1. GERAR IMAGEM ÚNICA COM IA
+            print(f"   ✨ Cena {scene_counter + 1}/{num_segments * len(roteiro)}")
+            gerou_sucesso = gerar_imagem_ia_pollinations(prompt_ia, img_path)
 
-            # 1. Busca imagem real no Wikipedia ou DuckDuckGo para o termo da cena
-            print(f"   📸 Cena {scene_counter + 1} | Buscando: '{termo}'")
-            img_url = buscar_imagem_wikipedia(termo) or buscar_imagem_ddg(termo)
-            
-            if img_url:
-                try:
-                    res = requests.get(img_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
-                    if res.status_code == 200:
-                        h = calcular_hash_imagem(res.content)
-                        if h not in pool_imagens_unicas:
-                            pool_imagens_unicas[h] = res.content
-                        bytes_imagem_escolhida = res.content
-                        imagem_salva = salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
-                except Exception as e:
-                    print(f"   ⚠️ Download falhou para '{termo}': {e}")
-                    imagem_salva = False
+            # Fallback de segurança se a requisição falhar
+            if not gerou_sucesso:
+                print("   ⚠️ Tentando prompt genérico de fallback na IA...")
+                gerar_imagem_ia_pollinations("breaking news background cinematic", img_path)
 
-            # 2. FALLBACK ANTI-REPETIÇÃO CONSECUTIVA (Usando apenas o pool dinâmico da notícia)
-            if not imagem_salva:
-                print(f"   ⚠️ Selecionando foto do pool da notícia com filtro anti-duplicidade.")
-                todas_chaves_hashes = list(pool_imagens_unicas.keys())
-                
-                if todas_chaves_hashes:
-                    # Impede repetição com a cena anterior e a penúltima
-                    hashes_proibidos = historico_exibicao[-2:] if len(historico_exibicao) >= 2 else historico_exibicao[-1:]
-                    hashes_permitidos = [h for h in todas_chaves_hashes if h not in hashes_proibidos]
-                    
-                    if not hashes_permitidos:
-                        hashes_permitidos = todas_chaves_hashes
-
-                    hash_escolhido = hashes_permitidos[scene_counter % len(hashes_permitidos)]
-                    bytes_imagem_escolhida = pool_imagens_unicas[hash_escolhido]
-                    salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
-                    h_atual = hash_escolhido
-                else:
-                    # Caso extremo: re-tenta busca geral pelo tema principal
-                    res = requests.get(buscar_imagem_ddg(figuras_gerais[0]), timeout=8)
-                    salvar_imagem_sem_distorcao(res.content, img_path)
-                    h_atual = calcular_hash_imagem(res.content)
-            else:
-                h_atual = calcular_hash_imagem(bytes_imagem_escolhida)
-
-            historico_exibicao.append(h_atual)
             scene_counter += 1
 
             # C. EDIÇÃO DE MOVIMENTO (Zoom In / Zoom Out Alternado)
@@ -351,4 +249,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+                
