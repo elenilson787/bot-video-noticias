@@ -69,7 +69,7 @@ def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
                     img_bytes = base64.b64decode(base64_str)
                     return salvar_imagem_sem_distorcao(img_bytes, target_path)
         else:
-            print(f"   ⚠️ Google Imagen retornou status {res.status_code} (provável filtro de segurança).")
+            print(f"   ⚠️ Google Imagen retornou status {res.status_code} (filtro ativado).")
     except Exception as e:
         print(f"   ⚠️ Erro ao conectar no Google Imagen: {e}")
     return False
@@ -91,11 +91,10 @@ def gerar_imagem_ia_pollinations(prompt_ingles, target_path):
     return False
 
 def buscar_pexels_photo_dinamico(prompt_ingles, pexels_key, target_path):
-    """Backup dinâmico que busca fotos no Pexels usando as palavras exatas da cena"""
+    """Backup dinâmico que busca fotos no Pexels usando palavras-chave da cena"""
     if not pexels_key:
         return False
     try:
-        # Extrai palavras-chave do prompt
         keywords = " ".join([word for word in prompt_ingles.split() if len(word) > 3][:3])
         headers = {"Authorization": pexels_key}
         url = f"https://api.pexels.com/v1/search?query={keywords}&per_page=10&orientation=landscape"
@@ -137,8 +136,8 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Análise da OpenAI com Instruções de Prompts Seguros para IA a cada 10s
-    print("🤖 Gerando roteiro pt-BR e descrições visuais exclusivas para IA a cada 10s...")
+    # 3. Análise da OpenAI
+    print("🤖 Gerando roteiro pt-BR e descrições visuais de 10s...")
     client = OpenAI(api_key=openai_key)
     
     prompt_roteiro = f"""
@@ -146,12 +145,12 @@ async def main():
     
     SUA MISSÃO:
     1. Crie um roteiro narrado ESTRITAMENTE em PORTUGUÊS DO BRASIL (pt-BR) em 8 blocos narrativos.
-    2. Para CADA BLOCO, forneça uma lista com 6 a 8 PROMPTS VISUAIS EXCLUSIVOS EM INGLÊS.
+    2. Para CADA BLOCO, forneça de 6 a 8 PROMPTS VISUAIS EXCLUSIVOS EM INGLÊS.
     3. Cada prompt visual servirá para gerar UMA IMAGEM ÚNICA DE IA a cada 10 SEGUNDOS de narração.
 
     REGRAS OBRIGATÓRIAS PARA OS PROMPTS DA IA (EM INGLÊS):
-    - Crie descrições FOTOGRÁFICAS, SEGURAS E DOCUMENTAIS referentes ao que é falado naquele trecho.
-    - REGRAS DE SEGURANÇA (Para não bloquear o filtro da IA): NUNCA use palavras de violência explícita como "attack", "blood", "missile", "war", "explosion". Substitua por descrições diplomáticas ou territoriais seguras:
+    - Crie descrições FOTOGRÁFICAS, SEGURAS E DOCUMENTAIS referentes ao assunto falado naquele exato trecho.
+    - REGRAS DE SEGURANÇA (Para evitar o filtro da IA): NUNCA use palavras de violência explícita como "attack", "blood", "missile", "war", "explosion". Substitua por descrições diplomáticas ou territoriais seguras:
       * Em vez de explosão/ataque: "wide aerial photograph of a Mediterranean coastal city at sunset, hazy atmosphere, cinematic documentary style"
       * Em vez de política/discursos: "a formal press conference room with podium, microphones, blurred diplomatic flags background, soft lighting"
       * Em vez de reuniões: "diplomats sitting around a grand conference table in an international summit, wide shot photo"
@@ -211,11 +210,11 @@ async def main():
         ]
         subprocess.run(cmd_tts, check=True)
 
-        # B. Duração e cálculo exato de imagens a cada ~10 segundos de fala
+        # B. Duração e cálculo exato de imagens (~10s cada)
         duration = get_media_duration(audio_path)
         num_segments = max(1, math.ceil(duration / 10.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Narração pt-BR: {duration:.1f}s | Gerando {num_segments} imagens de IA inéditas (~{sub_duration:.1f}s cada)")
+        print(f"⏱️ Narração pt-BR: {duration:.1f}s | Criando {num_segments} cenas com movimento de ~10s cada")
 
         prompts_cenas = bloco.get("prompts_ia_10s", [])
         sub_videos_list = []
@@ -227,32 +226,34 @@ async def main():
 
             imagem_salva = False
 
-            # 1. TENTATIVA 1: Google Imagen 3 (IA Principal)
+            # 1. Google Imagen 3 (IA Principal)
             print(f"   🎨 Scene {scene_counter + 1}/{num_segments * len(roteiro)} | Gerando via Google Imagen 3...")
             imagem_salva = gerar_imagem_google_imagen(prompt_ia, gemini_key, img_path)
 
-            # 2. TENTATIVA 2: Pollinations FLUX (IA Secundária - Ativada se o Google bloquear)
+            # 2. Pollinations FLUX (IA Secundária - Fallback se o Google bloquear)
             if not imagem_salva:
-                print(f"   ✨ Scene {scene_counter + 1}/{num_segments * len(roteiro)} | Recorrendo à IA Secundária (FLUX)...")
+                print(f"   ✨ Scene {scene_counter + 1}/{num_segments * len(roteiro)} | Gerando via IA Secundária (FLUX)...")
                 imagem_salva = gerar_imagem_ia_pollinations(prompt_ia, img_path)
 
-            # 3. TENTATIVA 3: Backup Dinâmico via Pexels (com termos específicos da cena)
+            # 3. Pexels Dinâmico
             if not imagem_salva:
-                print(f"   📸 Scene {scene_counter + 1}/{num_segments * len(roteiro)} | Recorrendo a foto documental dinâmica...")
+                print(f"   📸 Scene {scene_counter + 1}/{num_segments * len(roteiro)} | Buscando foto documental alternativa...")
                 imagem_salva = buscar_pexels_photo_dinamico(prompt_ia, pexels_key, img_path)
 
-            # 4. Fallback Extremo
+            # 4. Fallback visual seguro
             if not imagem_salva:
                 img = Image.new('RGB', (1920, 1080), color=(15, 23, 42))
                 img.save(img_path, 'JPEG', quality=95)
 
             scene_counter += 1
 
-            # C. EDIÇÃO DE MOVIMENTO (Zoom In / Zoom Out Alternado)
+            # C. EDIÇÃO OBRIGATÓRIA DE MOVIMENTO EM 100% DAS IMAGENS
             frames = int(sub_duration * 25)
             if scene_counter % 2 == 0:
+                # Efeito Zoom In (aproximação suave)
                 zoom_filter = f"scale=2560:1440,zoompan=z='min(zoom+0.0012,1.20)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
             else:
+                # Efeito Zoom Out (afastamento suave)
                 zoom_filter = f"scale=2560:1440,zoompan=z='max(1.20-zoom*0.0012,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
 
             cmd_sub_ffmpeg = [
@@ -326,4 +327,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-                        
+    
