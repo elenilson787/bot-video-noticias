@@ -1,6 +1,8 @@
 import os
 import json
 import math
+import random
+import hashlib
 import asyncio
 import requests
 import subprocess
@@ -23,8 +25,12 @@ def get_media_duration(file_path):
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return float(result.stdout.strip())
 
+def calcular_hash_imagem(binary_content):
+    """Gera um MD5 único dos bytes da imagem para evitar duplicadas"""
+    return hashlib.md5(binary_content).hexdigest()
+
 def salvar_imagem_sem_distorcao(binary_content, target_path):
-    """Ajusta a foto no enquadramento 16:9 (1920x1080) SEM esticar o rosto da pessoa"""
+    """Ajusta a foto no enquadramento 16:9 (1920x1080) SEM esticar"""
     try:
         img = Image.open(BytesIO(binary_content)).convert('RGB')
         img_fitted = ImageOps.fit(img, (1920, 1080), Image.Resampling.LANCZOS)
@@ -34,14 +40,14 @@ def salvar_imagem_sem_distorcao(binary_content, target_path):
         print(f"⚠️ Imagem inválida descartada: {e}")
         return False
 
-def buscar_wikimedia_commons(nome_pessoa):
-    """Busca fotos oficiais de figuras públicas no Wikimedia Commons (API pública imune a bloqueios)"""
+def buscar_wikimedia_commons(termo):
+    """Busca fotos e mapas contextuais no Wikimedia Commons (API Livre)"""
     try:
         url = "https://commons.wikimedia.org/w/api.php"
         params = {
             "action": "query",
             "generator": "search",
-            "gsrsearch": f"{nome_pessoa}",
+            "gsrsearch": f"{termo}",
             "gsrlimit": "5",
             "prop": "imageinfo",
             "iiprop": "url",
@@ -60,10 +66,10 @@ def buscar_wikimedia_commons(nome_pessoa):
         pass
     return None
 
-def buscar_imagem_ddg(nome_pessoa):
-    """Busca fotos jornalísticas de figuras públicas no DuckDuckGo"""
+def buscar_imagem_ddg(termo):
+    """Busca imagens e mapas contextuais no DuckDuckGo"""
     try:
-        results = DDGS().images(keywords=f"{nome_pessoa} foto noticia", max_results=3)
+        results = DDGS().images(keywords=f"{termo}", max_results=4)
         if results:
             for item in results:
                 img_url = item.get("image")
@@ -110,26 +116,41 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Análise da OpenAI focada estritamente em Figuras Públicas
-    print("🤖 Identificando Figuras Públicas e Autoridades no texto...")
+    # 3. Análise da OpenAI com Termos Visuais Contextuais e Seguros
+    print("🤖 Analisando contexto da notícia e gerando termos de busca visuais e seguros...")
     client = OpenAI(api_key=openai_key)
     
     prompt = f"""
-    Você é um editor de imagem de telejornalismo.
-    1. Identifique TODOS OS NOMES DE FIGURAS PÚBLICAS, POLÍTICOS, AUTORIDADES E LOCAIS REAIS mencionados na notícia.
-    2. Crie um roteiro de 1.100 a 1.300 palavras em 8 blocos narrativos.
-    3. Para cada bloco, forneça uma lista com os NOMES DAS PESSOAS OU LOCAIS REAIS citados no trecho.
+    Você é um editor de arte e diretor de documentários jornalísticos.
+    Sua missão é analisar o texto da notícia e criar termos de busca VISUAIS EXATOS, CONTEXTUAIS E SEGUROS para acompanhar a narração.
 
-    REGRA DE OURO: NUNCA sugira objetos, desenhos, animais ou termos abstratos. Apontar SOMENTE nomes de pessoas reais ou cargos públicos.
+    REGRAS DE OURO PARA BUSCA DE IMAGEM:
+    1. CONTEXTO GEOGRÁFICO/LOCAL: Se o texto narrar ataques ou conflitos em uma região (ex: Faixa de Gaza, Ucrânia, Washington), NÃO busque por violência explícita. Busque por termos de contexto geográfico ou representação territorial, como:
+       - "Gaza Strip map"
+       - "Gaza aerial view"
+       - "Middle East geography map"
+       - "Washington DC aerial view"
+    2. FIGURAS PÚBLICAS E POLÍTICA: Se citar pessoas ou governos, busque pelos nomes reais ou locais oficiais:
+       - "Donald Trump speech"
+       - "White House press room"
+       - "Palácio do Planalto Brasília"
+       - "United Nations Assembly hall"
+    3. Cenas a cada 7 segundos: Para cada bloco narrativo, forneça de 5 a 7 termos de busca ULTRA CONTEXTUAIS em inglês ou português que correspondam EXATAMENTE ao assunto narrado naquele trecho específico.
 
     Retorne ESTRITAMENTE um JSON no formato:
     {{
-      "figuras_publicas_mencionadas": ["Nome 1", "Nome 2", "Nome 3"],
+      "figuras_gerais": ["Nome 1", "Local 1"],
       "roteiro": [
         {{
           "bloco": 1,
-          "narracao": "Texto narrado...",
-          "pessoas_citadas": ["Nome da Pessoa 1", "Nome da Pessoa 2"]
+          "narracao": "Texto narrado para este trecho...",
+          "termos_busca_cenas": [
+            "termo contextual 1",
+            "termo contextual 2",
+            "termo contextual 3",
+            "termo contextual 4",
+            "termo contextual 5"
+          ]
         }}
       ]
     }}
@@ -141,31 +162,33 @@ async def main():
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um gerador de roteiros focado em nomes de figuras públicas reais."},
+            {"role": "system", "content": "Você é um gerador de roteiros focado em representação visual contextual e segura para o YouTube."},
             {"role": "user", "content": prompt}
         ],
         response_format={"type": "json_object"}
     )
     
     dados = json.loads(response.choices[0].message.content)
-    figuras_gerais = dados.get("figuras_publicas_mencionadas") or ["Noticia Brasil"]
+    figuras_gerais = dados.get("figuras_gerais") or ["Noticia Brasil"]
     roteiro = dados["roteiro"]
-    print(f"👤 Figuras Públicas Identificadas: {figuras_gerais}")
 
-    # 4. Renderização das Imagens (Troca a cada 7s + Edição de Zoom em 100% das fotos)
+    # 4. Controle de Imagens Únicas e Anti-Repetição
     os.makedirs("output", exist_ok=True)
     concat_block_list = []
-    pool_fotos_reais = []  # Backup contendo apenas fotos reais de figuras públicas do artigo
-    global_scene_counter = 0
+    pool_imagens_unicas = {}
+    historico_exibicao = [] 
 
-    # Baixa e valida a foto de capa original como primeiro item do pool
+    # Adiciona a capa oficial do artigo como opção inicial
     if foto_capa_original:
         try:
             res_capa = requests.get(foto_capa_original, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
             if res_capa.status_code == 200:
-                pool_fotos_reais.append(res_capa.content)
+                h = calcular_hash_imagem(res_capa.content)
+                pool_imagens_unicas[h] = res_capa.content
         except Exception:
             pass
+
+    scene_counter = 0
 
     for idx, bloco in enumerate(roteiro):
         print(f"\n🎬 Processando Bloco {idx + 1}/{len(roteiro)}...")
@@ -182,77 +205,87 @@ async def main():
         ]
         subprocess.run(cmd_tts, check=True)
 
-        # B. Duração e cálculo de troca exata a cada ~7 segundos
+        # B. Duração e cálculo exato de imagens (~7 segundos por imagem)
         duration = get_media_duration(audio_path)
         num_segments = max(1, math.ceil(duration / 7.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Duração: {duration:.1f}s | Montando {num_segments} fotos (~{sub_duration:.1f}s por foto)")
+        print(f"⏱️ Narração: {duration:.1f}s | Criando {num_segments} cenas contextuais (~{sub_duration:.1f}s cada)")
 
-        # Proteção contra lista vazia em pessoas_citadas
-        pessoas_bloco = bloco.get("pessoas_citadas")
-        if not pessoas_bloco:
-            pessoas_bloco = figuras_gerais
-
+        termos_cenas = bloco.get("termos_busca_cenas") or figuras_gerais
         sub_videos_list = []
 
         for j in range(num_segments):
-            nome_pessoa = pessoas_bloco[j % len(pessoas_bloco)]
+            termo = termos_cenas[j % len(termos_cenas)]
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
             imagem_salva = False
+            bytes_imagem_escolhida = None
 
-            # Primeira cena do vídeo usa a foto de capa oficial da notícia
-            if idx == 0 and j == 0 and pool_fotos_reais:
-                imagem_salva = salvar_imagem_sem_distorcao(pool_fotos_reais[0], img_path)
+            # 1. Primeira cena do vídeo usa a foto oficial da capa da matéria
+            if idx == 0 and j == 0 and pool_imagens_unicas:
+                bytes_imagem_escolhida = list(pool_imagens_unicas.values())[0]
+                imagem_salva = salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
 
-            # 1. Busca foto real no Wikimedia Commons
+            # 2. Busca termo contextual no Wikimedia Commons (Mapas, Territórios, Fotos Oficiais)
             if not imagem_salva:
-                print(f"   📸 Buscando figura pública (Wikimedia): '{nome_pessoa}'")
-                img_url = buscar_wikimedia_commons(nome_pessoa)
+                print(f"   📸 Cena {scene_counter + 1} | Buscando imagem contextual (Wikimedia): '{termo}'")
+                img_url = buscar_wikimedia_commons(termo)
                 if img_url:
                     try:
                         res = requests.get(img_url, timeout=8)
-                        imagem_salva = salvar_imagem_sem_distorcao(res.content, img_path)
-                        if imagem_salva and res.content not in pool_fotos_reais:
-                            pool_fotos_reais.append(res.content)
+                        h = calcular_hash_imagem(res.content)
+                        if h not in pool_imagens_unicas:
+                            pool_imagens_unicas[h] = res.content
+                            bytes_imagem_escolhida = res.content
+                            imagem_salva = salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
                     except Exception:
                         imagem_salva = False
 
-            # 2. Busca foto real no DuckDuckGo
+            # 3. Busca termo contextual no DuckDuckGo
             if not imagem_salva:
-                print(f"   🔎 Buscando figura pública (DuckDuckGo): '{nome_pessoa}'")
-                img_url = buscar_imagem_ddg(nome_pessoa)
+                print(f"   🔎 Cena {scene_counter + 1} | Buscando imagem contextual (DuckDuckGo): '{termo}'")
+                img_url = buscar_imagem_ddg(termo)
                 if img_url:
                     try:
                         res = requests.get(img_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
-                        imagem_salva = salvar_imagem_sem_distorcao(res.content, img_path)
-                        if imagem_salva and res.content not in pool_fotos_reais:
-                            pool_fotos_reais.append(res.content)
+                        h = calcular_hash_imagem(res.content)
+                        if h not in pool_imagens_unicas:
+                            pool_imagens_unicas[h] = res.content
+                            bytes_imagem_escolhida = res.content
+                            imagem_salva = salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
                     except Exception:
                         imagem_salva = False
 
-            # 3. Fallback estritamente de Pessoas Reais (NUNCA usa imagem genérica)
+            # 4. FALLBACK INTELIGENTE ANTI-REPETIÇÃO CONSECUTIVA
             if not imagem_salva:
-                print(f"   ⚠️ Usando foto de outra figura pública da notícia como backup.")
-                if pool_fotos_reais:
-                    foto_backup = pool_fotos_reais[global_scene_counter % len(pool_fotos_reais)]
-                    salvar_imagem_sem_distorcao(foto_backup, img_path)
-                else:
-                    figura_backup = figuras_gerais[0]
-                    img_url = buscar_wikimedia_commons(figura_backup) or buscar_imagem_ddg(figura_backup)
-                    if img_url:
-                        try:
-                            res = requests.get(img_url, timeout=8)
-                            salvar_imagem_sem_distorcao(res.content, img_path)
-                        except Exception:
-                            pass
+                print(f"   ⚠️ Reutilizando imagem do banco com filtro de variedade.")
+                todas_chaves_hashes = list(pool_imagens_unicas.keys())
+                
+                if len(todas_chaves_hashes) > 0:
+                    hashes_proibidos = historico_exibicao[-2:] if len(historico_exibicao) >= 2 else historico_exibicao[-1:]
+                    hashes_permitidos = [h for h in todas_chaves_hashes if h not in hashes_proibidos]
+                    
+                    if not hashes_permitidos:
+                        hashes_permitidos = todas_chaves_hashes
 
-            # C. EDIÇÃO OBRIGATÓRIA EM TODAS AS FOTOS: Efeito Zoom In e Zoom Out
-            global_scene_counter += 1
+                    hash_escolhido = hashes_permitidos[scene_counter % len(hashes_permitidos)]
+                    bytes_imagem_escolhida = pool_imagens_unicas[hash_escolhido]
+                    salvar_imagem_sem_distorcao(bytes_imagem_escolhida, img_path)
+                    h_atual = hash_escolhido
+                else:
+                    res = requests.get("https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200", timeout=8)
+                    salvar_imagem_sem_distorcao(res.content, img_path)
+                    h_atual = "fallback"
+            else:
+                h_atual = calcular_hash_imagem(bytes_imagem_escolhida)
+
+            historico_exibicao.append(h_atual)
+            scene_counter += 1
+
+            # C. EDIÇÃO DE MOVIMENTO (Zoom In / Zoom Out Alternado)
             frames = int(sub_duration * 25)
-            
-            if global_scene_counter % 2 == 0:
+            if scene_counter % 2 == 0:
                 zoom_filter = f"scale=2560:1440,zoompan=z='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
             else:
                 zoom_filter = f"scale=2560:1440,zoompan=z='max(1.25-zoom*0.0015,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
@@ -268,7 +301,7 @@ async def main():
             subprocess.run(cmd_sub_ffmpeg, check=True)
             sub_videos_list.append(f"file '{sub_video_path}'")
 
-        # D. Unir sub-cenas do bloco e sincronizar com o áudio
+        # D. Sincronizar sub-cenas do bloco com a narração
         sub_txt_path = os.path.abspath(f"output/sub_files_{idx}.txt")
         with open(sub_txt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(sub_videos_list))
@@ -328,4 +361,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+            
