@@ -1,2 +1,9 @@
+google-genai
+openai
+pyrogram
+tgcrypto
 python-telegram-bot
+trafilatura
+edge-tts
+Pillow
 requests
