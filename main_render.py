@@ -1,8 +1,7 @@
 import os
 import json
 import math
-import random
-import urllib.parse
+import time
 import asyncio
 import requests
 import subprocess
@@ -35,9 +34,8 @@ def salvar_imagem_sem_distorcao(binary_content, target_path):
         return False
 
 def criar_imagem_fallback_local(target_path):
-    """Cria uma imagem 16:9 (1920x1080) elegante localmente caso a conexão falhe"""
+    """Cria uma imagem de estúdio (1920x1080) localmente caso todas as requisições falhem"""
     try:
-        # Fundo escuro estilo estúdio jornalístico (Slate Blue)
         img = Image.new('RGB', (1920, 1080), color=(15, 23, 42))
         img.save(target_path, 'JPEG', quality=95)
         return True
@@ -45,26 +43,39 @@ def criar_imagem_fallback_local(target_path):
         print(f"⚠️ Erro ao criar fallback local: {e}")
         return False
 
-def gerar_imagem_ia_pollinations(prompt_ingles, target_path):
-    """Gera imagem via Pollinations AI com tentativas e fallback local 100% seguro"""
-    prompt_enriquecido = f"Editorial photojournalism, realistic news photo, cinematic lighting, 8k resolution, {prompt_ingles}"
-    prompt_encoded = urllib.parse.quote(prompt_enriquecido)
+def gerar_imagem_huggingface(prompt_ingles, hf_token, target_path):
+    """Gera imagem via Hugging Face API usando o modelo FLUX.1-schnell com suporte a aquecimento (503)"""
+    url = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+    headers = {"Authorization": f"Bearer {hf_token}"}
     
-    # Tenta até 3 vezes em caso de oscilação na API
+    prompt_enriquecido = f"Editorial news photograph, photojournalism, realistic news picture, cinematic lighting, 8k resolution, {prompt_ingles}"
+    payload = {
+        "inputs": prompt_enriquecido,
+        "parameters": {
+            "width": 1024,
+            "height": 576
+        }
+    }
+    
+    # Tenta até 3 vezes (trata retentativas se o modelo estiver carregando/aquecendo)
     for tentativa in range(3):
         try:
-            seed = random.randint(1, 999999)
-            url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
-            print(f"   🎨 Gerando imagem via IA (Tentativa {tentativa + 1}/3)...")
-            res = requests.get(url, timeout=15)
+            print(f"   🎨 [HF FLUX.1] Gerando imagem (Tentativa {tentativa + 1}/3): '{prompt_ingles[:45]}...'")
+            res = requests.post(url, headers=headers, json=payload, timeout=25)
             
             if res.status_code == 200 and len(res.content) > 5000:
                 if salvar_imagem_sem_distorcao(res.content, target_path):
                     return True
+            elif res.status_code == 503:
+                print("   ⏳ Modelo FLUX.1 aquecendo na nuvem... aguardando 8 segundos...")
+                time.sleep(8)
+            else:
+                print(f"   ⚠️ Status HF: {res.status_code} - {res.text[:100]}")
         except Exception as e:
-            print(f"   ⚠️ Oscilação na API: {e}")
+            print(f"   ⚠️ Falha ao conectar na API Hugging Face: {e}")
+            time.sleep(3)
             
-    print("   ⚠️ Conexão offline ou lenta. Gerando imagem de estúdio local...")
+    print("   ⚠️ Usando imagem de segurança de estúdio local...")
     return criar_imagem_fallback_local(target_path)
 
 async def main():
@@ -72,16 +83,17 @@ async def main():
     news_url = os.getenv("NEWS_URL")
     chat_id = os.getenv("CHAT_ID")
     openai_key = os.getenv("OPENAI_API_KEY")
+    hf_token = os.getenv("HF_TOKEN")
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     telegram_api_id = os.getenv("TELEGRAM_API_ID")
     telegram_api_hash = os.getenv("TELEGRAM_API_HASH")
 
-    if not all([news_url, chat_id, openai_key, telegram_token, telegram_api_id, telegram_api_hash]):
-        raise ValueError("❌ Erro: Variáveis de ambiente obrigatórias não encontradas!")
+    if not all([news_url, chat_id, openai_key, hf_token, telegram_token, telegram_api_id, telegram_api_hash]):
+        raise ValueError("❌ Erro: Variáveis de ambiente obrigatórias não encontradas (verifique HF_TOKEN)!")
 
     print(f"📥 Extraindo texto da notícia: {news_url}")
 
-    # 2. Extração do Conteúdo da Notícia
+    # 2. Extração da Notícia
     downloaded = trafilatura.fetch_url(news_url)
     if not downloaded:
         raise Exception("Não foi possível acessar a URL informada.")
@@ -90,17 +102,17 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Análise da OpenAI com Prompts de Geração Visual para IA
-    print("🤖 Analisando a notícia e criando prompts de imagem para a IA...")
+    # 3. Análise da OpenAI com Prompts de Geração Visual para FLUX.1
+    print("🤖 Analisando a notícia e gerando prompts de cena para o FLUX.1...")
     client = OpenAI(api_key=openai_key)
     
     prompt_roteiro = f"""
     Você é um diretor de arte e roteirista de telejornalismo.
     1. Crie um roteiro de 1.100 a 1.300 palavras em 8 blocos narrativos.
-    2. Para CADA BLOCO, crie 6 PROMPTS VISUAIS DETALHADOS EM INGLÊS para serem enviados a uma IA geradora de imagens.
+    2. Para CADA BLOCO, crie 6 PROMPTS VISUAIS DETALHADOS EM INGLÊS para serem enviados ao modelo de IA FLUX.1.
 
-    REGRAS PARA OS PROMPTS DA IA (EM INGLÊS):
-    - Devem descrever a cena fotograficamente correspondendo EXATAMENTE ao assunto que está sendo narrado.
+    REGRAS PARA OS PROMPTS DO FLUX.1 (EM INGLÊS):
+    - Devem descrever a cena fotograficamente correspondendo EXATAMENTE ao assunto narrado.
     - Se a narração for sobre política/diplomacia: "A formal press conference at the White House press room with flags, microphones, wide shot"
     - Se a narração for sobre conflito/geografia: "Aerial view of Gaza territory landscape with buildings and smoke in distance, news photography"
     - Se a narração for sobre economia: "Close up of United States dollar bills and financial charts on a desk, dramatic lighting"
@@ -139,7 +151,7 @@ async def main():
     dados = json.loads(response.choices[0].message.content)
     roteiro = dados["roteiro"]
 
-    # 4. Geração Dinâmica de Imagens Inéditas via IA por Cena
+    # 4. Geração Dinâmica de Imagens via FLUX.1 (Hugging Face)
     os.makedirs("output", exist_ok=True)
     concat_block_list = []
     scene_counter = 0
@@ -163,7 +175,7 @@ async def main():
         duration = get_media_duration(audio_path)
         num_segments = max(1, math.ceil(duration / 7.0))
         sub_duration = duration / num_segments
-        print(f"⏱️ Duração: {duration:.1f}s | Gerando {num_segments} imagens inéditas via IA (~{sub_duration:.1f}s por cena)")
+        print(f"⏱️ Duração: {duration:.1f}s | Gerando {num_segments} imagens com FLUX.1 (~{sub_duration:.1f}s por cena)")
 
         prompts_cenas = bloco.get("prompts_ia", [])
         sub_videos_list = []
@@ -173,9 +185,9 @@ async def main():
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
-            # 1. GERAR IMAGEM ÚNICA COM IA (COM FALLBACK LOCAL GARANTIDO)
+            # 1. Gerar imagem inédita com FLUX.1
             print(f"   ✨ Cena {scene_counter + 1}/{num_segments * len(roteiro)}")
-            gerar_imagem_ia_pollinations(prompt_ia, img_path)
+            gerar_imagem_huggingface(prompt_ia, hf_token, img_path)
 
             scene_counter += 1
 
