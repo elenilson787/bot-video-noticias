@@ -36,6 +36,17 @@ def salvar_imagem_sem_distorcao(binary_content, target_path):
         print(f"⚠️ Erro ao formatar imagem: {e}")
         return False
 
+def criar_imagem_estudio_local(target_path):
+    """Cria instantaneamente uma imagem 16:9 de estúdio jornalístico caso a rede falhe"""
+    try:
+        # Fundo Slate Blue escuro estilo estúdio de notícias
+        img = Image.new('RGB', (1920, 1080), color=(15, 23, 42))
+        img.save(target_path, 'JPEG', quality=95)
+        return True
+    except Exception as e:
+        print(f"⚠️ Erro ao criar imagem local: {e}")
+        return False
+
 def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
     """Gera imagem realista em 16:9 via Google Imagen 3"""
     if not gemini_key:
@@ -59,7 +70,7 @@ def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
     }
     
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=30)
+        res = requests.post(url, headers=headers, json=payload, timeout=25)
         if res.status_code == 200:
             data = res.json()
             generated_images = data.get("generatedImages", [])
@@ -73,27 +84,26 @@ def gerar_imagem_google_imagen(prompt_ingles, gemini_key, target_path):
     return False
 
 def gerar_imagem_pollinations_flux(prompt_ingles, target_path):
-    """Gera imagem por IA via modelo FLUX com retentativas automáticas"""
+    """Gera imagem por IA via modelo FLUX"""
     prompt_enriquecido = f"Documentary photojournalism, realistic news picture, 8k resolution, cinematic lighting, {prompt_ingles}"
     prompt_encoded = urllib.parse.quote(prompt_enriquecido)
     
-    for tentativa in range(3):
+    for tentativa in range(2):
         try:
             seed = random.randint(100000, 999999)
             url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
             
-            res = requests.get(url, headers=headers, timeout=30)
-            if res.status_code == 200 and len(res.content) > 10000:
+            res = requests.get(url, headers=headers, timeout=20)
+            if res.status_code == 200 and len(res.content) > 5000:
                 if salvar_imagem_sem_distorcao(res.content, target_path):
                     return True
-        except Exception as e:
-            print(f"   ⚠️ Tentativa {tentativa+1} FLUX falhou, tentando novamente...")
-            time.sleep(2)
+        except Exception:
+            time.sleep(1)
     return False
 
 def gerar_imagem_ia_garantida(prompt_ingles, gemini_key, target_path):
-    """Garante que a imagem seja 100% gerada por IA alternando entre os motores"""
+    """Garante 100% que a imagem estará pronta no disco antes do FFmpeg rodar"""
     # 1. Tenta Google Imagen 3
     if gemini_key:
         print(f"   🎨 Gerando via Google Imagen 3...")
@@ -105,10 +115,9 @@ def gerar_imagem_ia_garantida(prompt_ingles, gemini_key, target_path):
     if gerar_imagem_pollinations_flux(prompt_ingles, target_path):
         return True
 
-    # 3. Fallback de IA com prompt simplificado
-    print(f"   🔄 Gerando via IA Backup...")
-    prompt_simples = "editorial press room background, cinematic lighting, photojournalism"
-    return gerar_imagem_pollinations_flux(prompt_simples, target_path)
+    # 3. Fallback local de emergência (Garante que a imagem NUNCA fique ausente)
+    print(f"   🛡️ Oscilação de rede: gerando fundo de estúdio local...")
+    return criar_imagem_estudio_local(target_path)
 
 async def main():
     # 1. Leitura de Variáveis de Ambiente
@@ -134,7 +143,7 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Análise da OpenAI com Instruções de Roteiro e Cenas Fotojornalísticas para IA
+    # 3. Análise da OpenAI com Instruções de Roteiro pt-BR e Prompts de IA de 10s
     print("🤖 Gerando roteiro pt-BR e ordem de criação de imagens de IA a cada 10s...")
     client = OpenAI(api_key=openai_key)
     
@@ -222,19 +231,21 @@ async def main():
             sub_video_path = os.path.abspath(f"output/sub_{idx}_{j}.mp4")
             img_path = os.path.abspath(f"output/img_{idx}_{j}.jpg")
 
-            # Gerar imagem por IA garantida (Sem fallback para banco de fotos)
+            # Gerar imagem por IA garantida
             print(f"   🖼️ Scene {scene_counter + 1}/{num_segments * len(roteiro)} | Prompt: '{prompt_ia[:50]}...'")
             gerar_imagem_ia_garantida(prompt_ia, gemini_key, img_path)
+
+            # VALIDAÇÃO CRÍTICA: Se por qualquer motivo o arquivo não existir, cria o fallback antes do FFmpeg
+            if not os.path.exists(img_path) or os.path.getsize(img_path) < 1000:
+                criar_imagem_estudio_local(img_path)
 
             scene_counter += 1
 
             # C. EDIÇÃO OBRIGATÓRIA DE MOVIMENTO EM 100% DAS IMAGENS
             frames = int(sub_duration * 25)
             if scene_counter % 2 == 0:
-                # Efeito Zoom In
                 zoom_filter = f"scale=2560:1440,zoompan=z='min(zoom+0.0012,1.20)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
             else:
-                # Efeito Zoom Out
                 zoom_filter = f"scale=2560:1440,zoompan=z='max(1.20-zoom*0.0012,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,fps=25"
 
             cmd_sub_ffmpeg = [
@@ -308,4 +319,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+            
