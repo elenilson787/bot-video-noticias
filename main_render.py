@@ -15,9 +15,7 @@ from pyrogram import Client
 import trafilatura
 
 # ==============================================================================
-# ⚙️ CONFIGURAÇÃO DE DESENVOLVIMENTO
-# True  -> Teste rápido (gera slides locais com movimento em segundos)
-# False -> Produção (gera imagens 100% estilo Anime Inuyasha via IA)
+# CONFIGURAÇÃO: False para gerar as imagens reais de Anime 90s por IA
 MODO_TESTE = False
 # ==============================================================================
 
@@ -63,14 +61,13 @@ def criar_imagem_placeholder_teste(numero_cena, texto_trecho, target_path):
         return False
 
 def gerar_imagem_google_imagen_anime(prompt_ingles, gemini_key, target_path):
-    """Gera imagem no estilo Anime Anos 90 (Inuyasha/Rumiko Takahashi) via Google Imagen 3"""
+    """Gera imagem no estilo Anime Anos 90 via API oficial do Google AI Studio"""
     if not gemini_key:
         return False
         
     url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:generateImages?key={gemini_key}"
     headers = {"Content-Type": "application/json"}
     
-    # Prompt com estética Inuyasha/Anime 90s
     prompt_enriquecido = (
         f"1990s retro anime art style, hand-drawn cel animation, Rumiko Takahashi aesthetics, "
         f"Inuyasha anime visual style, dramatic atmospheric lighting, detailed background, {prompt_ingles}. "
@@ -95,48 +92,63 @@ def gerar_imagem_google_imagen_anime(prompt_ingles, gemini_key, target_path):
                 base64_str = generated_images[0].get("image", {}).get("imageBytes")
                 if base64_str:
                     img_bytes = base64.b64decode(base64_str)
+                    print("   ✅ Sucesso via Google Imagen 3!")
                     return salvar_imagem_sem_distorcao(img_bytes, target_path)
+        else:
+            print(f"   ⚠️ Resposta Google Imagen: {res.status_code} - {res.text[:80]}")
     except Exception as e:
-        print(f"   ⚠️ Conexão Google Imagen: {e}")
+        print(f"   ⚠️ Erro de conexão com Google Imagen: {e}")
     return False
 
 def gerar_imagem_pollinations_flux_anime(prompt_ingles, target_path):
-    """Gera imagem no estilo Anime Anos 90 via FLUX"""
+    """Gera imagem no estilo Anime Anos 90 via Pollinations FLUX com reconexão resiliente"""
     prompt_enriquecido = (
         f"1990s retro anime style, Inuyasha anime visual aesthetics, hand-drawn cel animation, "
         f"dramatic lighting, hand painted background, {prompt_ingles}"
     )
     prompt_encoded = urllib.parse.quote(prompt_enriquecido)
     
-    try:
-        seed = random.randint(100000, 999999)
-        url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        
-        res = requests.get(url, headers=headers, timeout=20)
-        if res.status_code == 200 and len(res.content) > 5000:
-            return salvar_imagem_sem_distorcao(res.content, target_path)
-    except Exception:
-        pass
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+    })
+
+    for tentativa in range(3):
+        try:
+            seed = random.randint(100000, 999999)
+            url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1920&height=1080&seed={seed}&nologo=true&model=flux"
+            
+            res = session.get(url, timeout=30)
+            if res.status_code == 200 and len(res.content) > 10000:
+                print("   ✅ Sucesso via Pollinations FLUX!")
+                return salvar_imagem_sem_distorcao(res.content, target_path)
+            else:
+                print(f"   ⚠️ Tentativa {tentativa+1} FLUX retornou status: {res.status_code}")
+        except Exception as e:
+            print(f"   ⚠️ Tentativa {tentativa+1} FLUX falhou: {e}")
+            time.sleep(2)
+            
     return False
 
 def gerar_imagem_ia_garantida(prompt_ingles, gemini_key, scene_num, target_path):
-    """Gerenciador inteligente de imagens estilo Anime"""
+    """Gerenciador de imagens estilo Anime"""
     if MODO_TESTE:
         return criar_imagem_placeholder_teste(scene_num, prompt_ingles, target_path)
 
-    # 1. Google Imagen 3 (Anime 90s)
+    # 1. Tenta Google Imagen 3
     if gemini_key:
         print(f"   🎨 Gerando cena Anime via Google Imagen 3...")
         if gerar_imagem_google_imagen_anime(prompt_ingles, gemini_key, target_path):
             return True
 
-    # 2. Pollinations FLUX (Anime 90s)
+    # 2. Tenta Pollinations FLUX
     print(f"   ✨ Gerando cena Anime via Pollinations FLUX...")
     if gerar_imagem_pollinations_flux_anime(prompt_ingles, target_path):
         return True
 
-    # 3. Slide de emergência
+    # 3. Fallback de segurança local se a rede esgotar
+    print(f"   🛡️ Gerando slide de segurança...")
     return criar_imagem_placeholder_teste(scene_num, prompt_ingles, target_path)
 
 async def main():
@@ -163,8 +175,8 @@ async def main():
     if not texto_noticia:
         raise Exception("Não foi possível extrair o texto principal da notícia.")
 
-    # 3. Análise da OpenAI com prompts visuais adaptados para Estilo Anime
-    print("🤖 Gerando roteiro pt-BR e descrições de cenas no estilo Anime 90s...")
+    # 3. Análise da OpenAI
+    print("🤖 Gerando roteiro pt-BR e prompts de imagem no estilo Anime 90s...")
     client = OpenAI(api_key=openai_key)
     
     prompt_roteiro = f"""
@@ -248,7 +260,7 @@ async def main():
 
             scene_counter += 1
 
-            # Geração da imagem no estilo Anime Inuyasha
+            # Geração da imagem estilo Anime
             gerar_imagem_ia_garantida(prompt_ia, gemini_key, scene_counter, img_path)
 
             # C. EDIÇÃO DE MOVIMENTO (Zoom In / Zoom Out Alternado)
@@ -329,3 +341,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
