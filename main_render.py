@@ -25,6 +25,17 @@ except ImportError:
 MODO_TESTE = False
 # ==============================================================================
 
+def run_command(cmd, description="Comando"):
+    """Executa um comando no terminal e imprime o erro detalhado em caso de falha"""
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return result
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ Erro ao executar [{description}]:")
+        print(f"--- STDOUT ---\n{e.stdout}")
+        print(f"--- STDERR ---\n{e.stderr}\n")
+        raise e
+
 def get_media_duration(file_path):
     """Retorna a duração exata do áudio em segundos"""
     cmd = [
@@ -33,7 +44,7 @@ def get_media_duration(file_path):
         "-of", "default=noprint_wrappers=1:nokey=1",
         file_path
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    result = run_command(cmd, "ffprobe duracao audio")
     return float(result.stdout.strip())
 
 def salvar_imagem_sem_distorcao(binary_content, target_path):
@@ -50,6 +61,17 @@ def salvar_imagem_sem_distorcao(binary_content, target_path):
         return True
     except Exception as e:
         print(f"⚠️ Erro ao formatar imagem: {e}")
+        return False
+
+def criar_imagem_placeholder(target_path):
+    """Gera uma imagem de segurança caso todas as fontes falhem"""
+    try:
+        img = Image.new('RGB', (1920, 1080), color=(18, 24, 38))
+        img.save(target_path, 'JPEG', quality=90)
+        print(f"   ⚠️ [Fallback] Imagem padrão (placeholder) gerada em {target_path}")
+        return True
+    except Exception as e:
+        print(f"❌ Erro ao criar placeholder: {e}")
         return False
 
 # ------------------------------------------------------------------------------
@@ -157,7 +179,7 @@ def N4_buscar_foto_noticia_real(query_especifico, target_path):
         except Exception as e:
             print(f"   ⚠️ [N4] DDGS instável: {e}")
 
-    # Fallback via Wikimedia Commons API (100% nativo e sem dependência externa)
+    # Fallback via Wikimedia Commons API
     try:
         url_wiki = f"https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch={urllib.parse.quote(query_especifico)}&gsrlimit=6&prop=pageimages&piprop=original&format=json"
         res = requests.get(url_wiki, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
@@ -196,8 +218,12 @@ def adquirir_imagem_cinematografica(prompt_ia, query_real, gemini_key, hf_token,
     if N4_buscar_foto_noticia_real(query_real, target_path):
         return True
 
-    # Fallback com termo jornalístico genérico
-    return N4_buscar_foto_noticia_real("press conference news room photo", target_path)
+    # Fallback 1: Termo jornalístico genérico
+    if N4_buscar_foto_noticia_real("press conference news room photo", target_path):
+        return True
+
+    # Fallback 2 garantido: Imagem placeholder
+    return criar_imagem_placeholder(target_path)
 
 # ------------------------------------------------------------------------------
 # PROCESSAMENTO PRINCIPAL
@@ -215,6 +241,8 @@ async def main():
 
     if not all([news_url, chat_id, openai_key, telegram_token, telegram_api_id, telegram_api_hash]):
         raise ValueError("❌ Erro: Variáveis de ambiente obrigatórias não encontradas!")
+
+    os.makedirs("output", exist_ok=True)
 
     print(f"📥 Extraindo conteúdo da notícia: {news_url}")
 
@@ -236,7 +264,7 @@ async def main():
     1. Crie uma narração em PORTUGUÊS DO BRASIL (PT-BR) jornalística e envolvente dividida em 8 blocos.
     2. Para CADA BLOCO, forneça de 6 a 8 pares de termos visuais para cada janela de 10 SEGUNDOS de fala:
        - "prompt_ia": Descrição fotojornalística cinematográfica em Inglês (sem texto, sem letras, sem logos, estilo filme 35mm).
-       - "query_real": Termo de busca em Inglês focado nas Pessoas, Locais ou Instituições REAIS mencionadas na narração (ex: "Donald Trump Oval Office press photo", "Gaza territory aerial view", "White House briefing room").
+       - "query_real": Termo de busca em Inglês focado nas Pessoas, Locais ou Instituições REAIS mencionadas na narração.
 
     Retorne ESTRITAMENTE um JSON no formato:
     {{
@@ -270,7 +298,6 @@ async def main():
     dados = json.loads(response.choices[0].message.content)
     roteiro = dados["roteiro"]
 
-    os.makedirs("output", exist_ok=True)
     concat_block_list = []
     scene_counter = 0
 
@@ -287,7 +314,7 @@ async def main():
             "--voice", "pt-BR-AntonioNeural",
             "--write-media", audio_path
         ]
-        subprocess.run(cmd_tts, check=True)
+        run_command(cmd_tts, f"Gerando Áudio Bloco {idx}")
 
         duration = get_media_duration(audio_path)
         num_segments = max(1, math.ceil(duration / 10.0))
@@ -311,7 +338,11 @@ async def main():
             print(f"   🖼️ Tomada {scene_counter}/{num_segments * len(roteiro)}")
             adquirir_imagem_cinematografica(prompt_ia, query_real, gemini_key, hf_token, img_path)
 
-            # EDIÇÃO CINEMATOGRÁFICA (Color Grading + 4 Movimentos Variados)
+            # Trava de segurança extra para garantir que a imagem existe e é válida
+            if not os.path.exists(img_path) or os.path.getsize(img_path) == 0:
+                criar_imagem_placeholder(img_path)
+
+            # EDIÇÃO CINEMATOGRÁFICA
             frames = int(sub_duration * 25)
             tipo_movimento = scene_counter % 4
 
@@ -320,9 +351,9 @@ async def main():
             elif tipo_movimento == 1:
                 vf_filter = f"scale=2560:1440,zoompan=z='max(1.25-zoom*0.0015,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,eq=contrast=1.08:saturation=1.12,fps=25"
             elif tipo_movimento == 2:
-                vf_filter = f"scale=2560:1440,zoompan=z=1.15:x='if(eq(on,1),iw/4,(x-1.2))':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,eq=contrast=1.08:saturation=1.12,fps=25"
+                vf_filter = f"scale=2560:1440,zoompan=z=1.15:x='if(eq(on,1),iw/4,max(x-1.2,0))':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,eq=contrast=1.08:saturation=1.12,fps=25"
             else:
-                vf_filter = f"scale=2560:1440,zoompan=z=1.15:x='if(eq(on,1),0,(x+1.2))':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,eq=contrast=1.08:saturation=1.12,fps=25"
+                vf_filter = f"scale=2560:1440,zoompan=z=1.15:x='if(eq(on,1),0,min(x+1.2,iw))':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080,eq=contrast=1.08:saturation=1.12,fps=25"
 
             cmd_sub_ffmpeg = [
                 "ffmpeg", "-y",
@@ -332,7 +363,7 @@ async def main():
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 sub_video_path
             ]
-            subprocess.run(cmd_sub_ffmpeg, check=True)
+            run_command(cmd_sub_ffmpeg, f"Gerar tomada {idx}_{j}")
             sub_videos_list.append(f"file '{sub_video_path}'")
 
         sub_txt_path = os.path.abspath(f"output/sub_files_{idx}.txt")
@@ -344,7 +375,7 @@ async def main():
             "ffmpeg", "-y", "-f", "concat", "-safe", "0",
             "-i", sub_txt_path, "-c", "copy", block_video_no_audio
         ]
-        subprocess.run(cmd_join_sub, check=True)
+        run_command(cmd_join_sub, f"Unir tomadas bloco {idx}")
 
         cmd_merge_audio = [
             "ffmpeg", "-y",
@@ -353,7 +384,7 @@ async def main():
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
             "-shortest", block_video_path
         ]
-        subprocess.run(cmd_merge_audio, check=True)
+        run_command(cmd_merge_audio, f"Mesclar audio bloco {idx}")
         concat_block_list.append(f"file '{block_video_path}'")
 
     # União final
@@ -372,7 +403,7 @@ async def main():
         "-c", "copy",
         final_video_path
     ]
-    subprocess.run(cmd_join, check=True)
+    run_command(cmd_join, "Unir todos os blocos no vídeo final")
 
     print("📤 Enviando vídeo final no Telegram...")
     app = Client(
@@ -392,3 +423,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+            
